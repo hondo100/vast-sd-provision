@@ -88,6 +88,7 @@ aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
   "https://civitai.com/api/download/models/125843?type=Model&format=PickleTensor&token=$CIVITAI_TOKEN" \
   -d "$ESRGAN_PATH" -o 4x-UltraSharp.pth
 
+
 echo "=============================================================================="
 echo "PROVISIONING ERFOLGREICH: Alle Pfade korrigiert und Modelle geladen!"
 echo "=============================================================================="
