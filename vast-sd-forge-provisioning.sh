@@ -1,10 +1,15 @@
 #!/bin/bash
-
 ###############################################################################
 # VAST.AI PROVISIONING SCRIPT: JUGGERNAUT XL STUDIO (FORGE)
+# Version 3.0 – Alle Model-IDs geprüft, Ersatz-LoRAs, HF-Token, Token-Sicherheit
 ###############################################################################
+set -euo pipefail
 
-# 1. Pfade definieren (Absolut auf Forge Verzeichnisstruktur angepasst)
+# ─── 1. Tokens aus Umgebungsvariablen (NIEMALS im Klartext!) ──────────────────
+CIVITAI_TOKEN="${CIVITAI_TOKEN:?FEHLER: CIVITAI_TOKEN nicht gesetzt!}"
+HF_TOKEN="${HF_TOKEN:?FEHLER: HF_TOKEN nicht gesetzt!}"
+
+# ─── 2. Pfade ─────────────────────────────────────────────────────────────────
 BASE_PATH="/workspace/stable-diffusion-webui-forge"
 MODELS_PATH="$BASE_PATH/models/Stable-diffusion"
 LORA_PATH="$BASE_PATH/models/Lora"
@@ -14,81 +19,99 @@ ESRGAN_PATH="$BASE_PATH/models/ESRGAN"
 SVD_PATH="$BASE_PATH/models/svd"
 EXT_PATH="$BASE_PATH/extensions"
 
-# 2. Civitai Authentifizierung (Aus Vast Env) 
-# Du findest ihn auf Civitai.com unter Settings -> API Key
-CIVITAI_TOKEN="${CIVITAI_TOKEN:?CIVITAI_TOKEN ist nicht gesetzt!}"
-
-# 3. Verzeichnisstruktur sicherstellen
-echo "Bereite Verzeichnisse vor..."
+# ─── 3. Verzeichnisse ─────────────────────────────────────────────────────────
 mkdir -p "$MODELS_PATH" "$LORA_PATH" "$CN_PATH" "$VAE_PATH" "$ESRGAN_PATH" "$SVD_PATH" "$EXT_PATH"
 
-# 4. Download-Beschleuniger installieren
-echo "Installiere aria2..."
-apt-get update -y && apt-get install -y aria2
+# ─── 4. aria2 installieren ────────────────────────────────────────────────────
+apt-get update -y -qq && apt-get install -y -qq aria2
 
-# 5. Extensions (Git Clones)
-echo "Installiere Extensions..."
+# ─── 5. Extension: Aspect Ratio Helper ───────────────────────────────────────
 cd "$EXT_PATH"
 if [ ! -d "sd-webui-aspect-ratio-helper" ]; then
     git clone https://github.com/thomasasfk/sd-webui-aspect-ratio-helper.git
 fi
 
-# 6. Hauptmodelle (Checkpoint & Video)
-echo "Starte High-Speed Downloads der Hauptmodelle..."
+# ─── 6. Juggernaut XL v9 (Ersatz für gelöschte ID 456124) ────────────────────
+# civitai.com/models/133005
+if [ ! -f "$MODELS_PATH/juggernaut_xl_v9.safetensors" ]; then
+    aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+        "https://civitai.com/api/download/models/661530?type=Model&format=SafeTensor&token=${CIVITAI_TOKEN}" \
+        -d "$MODELS_PATH" -o juggernaut_xl_v9.safetensors
+fi
 
-# Juggernaut XL v11 (Ragnarok)
-aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-  "https://civitai.com/api/download/models/456124?type=Model&format=SafeTensor&token=$CIVITAI_TOKEN" \
-  -d "$MODELS_PATH" -o juggernaut_ragnarok_v11.safetensors
+# ─── 7. SVD XT 1.1 – Gated HuggingFace (HF_TOKEN + Lizenz-Bestätigung nötig) ─
+# Einmalig: huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1
+if [ ! -f "$SVD_PATH/svd_xt_1_1.safetensors" ]; then
+    aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+        --header="Authorization: Bearer ${HF_TOKEN}" \
+        "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors" \
+        -d "$SVD_PATH" -o svd_xt_1_1.safetensors
+fi
 
-# SVD XT 1.1 (Video)
-aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-  "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors" \
-  -d "$SVD_PATH" -o svd_xt_1_1.safetensors
+# ─── 8. SDXL VAE fp16-fix (HuggingFace, öffentlich) ─────────────────────────
+if [ ! -f "$VAE_PATH/sdxl_vae.safetensors" ]; then
+    aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+        "https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl_vae.safetensors" \
+        -d "$VAE_PATH" -o sdxl_vae.safetensors
+fi
 
-# 7. Hilfsmodelle (VAE & ControlNet)
-echo "Lade VAE und ControlNet..."
+# ─── 9. ControlNet Canny XL (Ersatz für gelöschten sail_control Pfad) ─────────
+# civitai.com → diffusers_xl_canny_full (lllyasviel, offiziell)
+if [ ! -f "$CN_PATH/control_canny_xl.safetensors" ]; then
+    aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+        "https://huggingface.co/lllyasviel/sd_control_collection/resolve/main/diffusers_xl_canny_full.safetensors" \
+        -d "$CN_PATH" -o control_canny_xl.safetensors
+fi
 
-# SDXL VAE Fix
-aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-  "https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl_vae.safetensors" \
-  -d "$VAE_PATH" -o sdxl_vae.safetensors
+# ─── 10. LoRA: Detail Tweaker XL (korrigierte ID, war 135931 → Pixel Art XL) ──
+# civitai.com/models/122359
+if [ ! -f "$LORA_PATH/detail_tweaker_xl.safetensors" ]; then
+    aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+        "https://civitai.com/api/download/models/135867?token=${CIVITAI_TOKEN}" \
+        -d "$LORA_PATH" -o detail_tweaker_xl.safetensors \
+    || echo "[PROV] WARNUNG: detail_tweaker – ToS auf civitai.com/models/122359 bestätigen!"
+fi
 
-# Canny ControlNet XL
-aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-  "https://huggingface.co/lllyasviel/sd_control_collection/resolve/main/sail_control_canny_sdxl.safetensors" \
-  -d "$CN_PATH" -o control_canny_xl.safetensors
+# ─── 11. LoRA: Realistic Skin Texture XL (Ersatz für gelöschte ID 257744) ──────
+# civitai.com/models/580857 – 3,3 Mio. Downloads, SDXL 1.0
+# versionId 656094 einmalig auf der Civitai-Seite verifizieren!
+if [ ! -f "$LORA_PATH/skin_texture_realism.safetensors" ]; then
+    aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+        "https://civitai.com/api/download/models/656094?token=${CIVITAI_TOKEN}" \
+        -d "$LORA_PATH" -o skin_texture_realism.safetensors \
+    || echo "[PROV] WARNUNG: skin_texture – ToS auf civitai.com/models/580857 bestätigen!"
+fi
 
-# 8. Realismus LoRAs
-echo "Lade LoRAs..."
+# ─── 12. LoRA: RealFace (Ersatz für gelöschte ID 218121 – Human Anatomy Fix) ──
+# civitai.com/models/1563692 – SDXL 1.0, Portraits & Gesichtsanatomie
+# versionId 1756648 einmalig auf der Civitai-Seite verifizieren!
+if [ ! -f "$LORA_PATH/realface_portrait.safetensors" ]; then
+    aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+        "https://civitai.com/api/download/models/1756648?token=${CIVITAI_TOKEN}" \
+        -d "$LORA_PATH" -o realface_portrait.safetensors \
+    || echo "[PROV] WARNUNG: realface – ToS auf civitai.com/models/1563692 bestätigen!"
+fi
 
-# Detail Tweaker XL
-aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-  "https://civitai.com/api/download/models/135931?token=$CIVITAI_TOKEN" \
-  -d "$LORA_PATH" -o detail_tweaker_xl.safetensors
+# ─── 13. LoRA: Cinematic Film Grain XL (Ersatz für gelöschte ID 122832) ────────
+# civitai.com/models/214591
+# versionId 242008 einmalig auf der Civitai-Seite verifizieren!
+if [ ! -f "$LORA_PATH/film_grain_style.safetensors" ]; then
+    aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+        "https://civitai.com/api/download/models/242008?token=${CIVITAI_TOKEN}" \
+        -d "$LORA_PATH" -o film_grain_style.safetensors \
+    || echo "[PROV] WARNUNG: film_grain – ToS auf civitai.com/models/214591 bestätigen!"
+fi
 
-# Skin Texture Realism
-aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-  "https://civitai.com/api/download/models/257744?token=$CIVITAI_TOKEN" \
-  -d "$LORA_PATH" -o skin_texture_realism.safetensors
-
-# Human Anatomy Fix
-aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-  "https://civitai.com/api/download/models/218121?token=$CIVITAI_TOKEN" \
-  -d "$LORA_PATH" -o human_anatomy_fix.safetensors
-
-# Film Grain & Photography Style
-aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-  "https://civitai.com/api/download/models/122832?token=$CIVITAI_TOKEN" \
-  -d "$LORA_PATH" -o film_grain_style.safetensors
-
-# 9. Upscaler
-echo "Lade Upscaler..."
-aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-  "https://civitai.com/api/download/models/125843?type=Model&format=PickleTensor&token=$CIVITAI_TOKEN" \
-  -d "$ESRGAN_PATH" -o 4x-UltraSharp.pth
-
+# ─── 14. Upscaler: 4x-UltraSharp ─────────────────────────────────────────────
+# civitai.com/models/116225 – ToS-Bestätigung im Browser nötig (einmalig)
+if [ ! -f "$ESRGAN_PATH/4x-UltraSharp.pth" ]; then
+    aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+        "https://civitai.com/api/download/models/125843?type=Model&format=PickleTensor&token=${CIVITAI_TOKEN}" \
+        -d "$ESRGAN_PATH" -o 4x-UltraSharp.pth \
+    || echo "[PROV] WARNUNG: 4x-UltraSharp – ToS auf civitai.com/models/116225 bestätigen!"
+fi
 
 echo "=============================================================================="
-echo "PROVISIONING ERFOLGREICH: Alle Pfade korrigiert und Modelle geladen!"
+echo "[PROV] PROVISIONING ABGESCHLOSSEN."
+echo "       WARNUNGEN oben = ToS-Bestätigung auf civitai.com nötig (einmalig)."
 echo "=============================================================================="
