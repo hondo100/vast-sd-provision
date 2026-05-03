@@ -14,9 +14,9 @@ ESRGAN_PATH="$BASE_PATH/models/ESRGAN"
 SVD_PATH="$BASE_PATH/models/svd"
 EXT_PATH="$BASE_PATH/extensions"
 
-# 2. Civitai Authentifizierung (Hier deinen Key eintragen!)
+# 2. Civitai Authentifizierung (Aus Vast Env) 
 # Du findest ihn auf Civitai.com unter Settings -> API Key
-CIVITAI_TOKEN="e29aa39285ddd60aeadcc3cba5fecb3a"
+CIVITAI_TOKEN="${CIVITAI_TOKEN:?CIVITAI_TOKEN ist nicht gesetzt!}"
 
 # 3. Verzeichnisstruktur sicherstellen
 echo "Bereite Verzeichnisse vor..."
