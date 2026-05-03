@@ -1,91 +1,93 @@
 #!/bin/bash
 
-# ==============================================================================
-# PROVISIONING SCRIPT: ULTIMATIVE PERFORMANCE VERSION (Master Tool 2026)
-# Fokus: Fotorealismus, Videogenerierung & Körper-Realismus
-# ==============================================================================
+###############################################################################
+# VAST.AI PROVISIONING SCRIPT: JUGGERNAUT XL STUDIO (FORGE)
+###############################################################################
 
-# 1. DOWNLOAD-HELPER DEFINIEREN
-# Installiert aria2 für parallele Downloads (16 Verbindungen für maximalen Speed)
-if ! command -v aria2c &> /dev/null; then
-    echo "Installiere Download-Beschleuniger aria2..."
-    apt-get update && apt-get install -y aria2
-fi
-
-download_asset() {
-    local url=$1
-    local dest=$2
-    local filename=$3
-    mkdir -p "$dest"
-    if [ ! -f "$dest/$filename" ]; then
-        echo "Downloade: $filename"
-        # Nutzt 16 Verbindungen und 1MB Splits für maximale Bandbreitenausnutzung
-        aria2c -x 16 -s 16 -k 1M --console-log-level=error --summary-interval=10 "$url" -d "$dest" -o "$filename"
-    else
-        echo "Überspringe $filename (bereits vorhanden)."
-    fi
-}
-
-# 2. PFADE DEFINIEREN (Basierend auf ai-dock Forge Standard)
-BASE_PATH="/workspace/stable-diffusion-webui"
-MODEL_PATH="$BASE_PATH/models/Stable-diffusion"
+# 1. Pfade definieren (Absolut auf Forge Verzeichnisstruktur angepasst)
+BASE_PATH="/workspace/stable-diffusion-webui-forge"
+MODELS_PATH="$BASE_PATH/models/Stable-diffusion"
 LORA_PATH="$BASE_PATH/models/Lora"
-SVD_PATH="$BASE_PATH/models/svd"
+CN_PATH="$BASE_PATH/models/ControlNet"
 VAE_PATH="$BASE_PATH/models/VAE"
 ESRGAN_PATH="$BASE_PATH/models/ESRGAN"
-CONTROLNET_PATH="$BASE_PATH/models/ControlNet"
+SVD_PATH="$BASE_PATH/models/svd"
 EXT_PATH="$BASE_PATH/extensions"
 
-# 3. EXTENSIONS INSTALLIEREN
-echo "Installiere Extensions..."
-# Aspect Ratio Helper für einfache Formatanpassungen
-[ ! -d "$EXT_PATH/sd-webui-aspect-ratio-helper" ] && \
-    git clone https://github.com/thomasasfk/sd-webui-aspect-ratio-helper "$EXT_PATH/sd-webui-aspect-ratio-helper"
+# 2. Civitai Authentifizierung (Hier deinen Key eintragen!)
+# Du findest ihn auf Civitai.com unter Settings -> API Key
+CIVITAI_TOKEN="e29aa39285ddd60aeadcc3cba5fecb3a"
 
-# 4. HAUPT-ASSETS DOWNLOADEN
+# 3. Verzeichnisstruktur sicherstellen
+echo "Bereite Verzeichnisse vor..."
+mkdir -p "$MODELS_PATH" "$LORA_PATH" "$CN_PATH" "$VAE_PATH" "$ESRGAN_PATH" "$SVD_PATH" "$EXT_PATH"
+
+# 4. Download-Beschleuniger installieren
+echo "Installiere aria2..."
+apt-get update -y && apt-get install -y aria2
+
+# 5. Extensions (Git Clones)
+echo "Installiere Extensions..."
+cd "$EXT_PATH"
+if [ ! -d "sd-webui-aspect-ratio-helper" ]; then
+    git clone https://github.com/thomasasfk/sd-webui-aspect-ratio-helper.git
+fi
+
+# 6. Hauptmodelle (Checkpoint & Video)
 echo "Starte High-Speed Downloads der Hauptmodelle..."
 
-# Juggernaut XL (Ragnarok v11) - Das Basismodell für Fotorealismus
-download_asset "https://civitai.com/api/download/models/456124?type=Model&format=SafeTensor&size=full&fp=fp16&token=$CIVITAI_TOKEN" \
-               "$MODEL_PATH" \
-               "juggernaut_ragnarok_v11.safetensors"
+# Juggernaut XL v11 (Ragnarok)
+aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+  "https://civitai.com/api/download/models/456124?type=Model&format=SafeTensor&token=$CIVITAI_TOKEN" \
+  -d "$MODELS_PATH" -o juggernaut_ragnarok_v11.safetensors
 
-# Video-Modell (SVD-XT) - Für die Videogenerierung
-download_asset "https://civitai.com/api/download/models/245598?token=$CIVITAI_TOKEN" \
-               "$SVD_PATH" \
-               "svd_xt_1_1.safetensors"
+# SVD XT 1.1 (Video)
+aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+  "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors" \
+  -d "$SVD_PATH" -o svd_xt_1_1.safetensors
 
-# 4x-UltraSharp Upscaler - Für knackscharfe 4K-Ergebnisse
-download_asset "https://civitai.com/api/download/models/125843?type=Model&format=PickleTensor" \
-               "$ESRGAN_PATH" \
-               "4x-UltraSharp.pth"
+# 7. Hilfsmodelle (VAE & ControlNet)
+echo "Lade VAE und ControlNet..."
 
-# SDXL VAE Fix - Verhindert graue Schleier/Artefakte
-download_asset "https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl_vae.safetensors" \
-               "$VAE_PATH" \
-               "sdxl_vae.safetensors"
+# SDXL VAE Fix
+aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+  "https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl_vae.safetensors" \
+  -d "$VAE_PATH" -o sdxl_vae.safetensors
 
-# ControlNet Canny XL - Für präzise Kompositionskontrolle
-download_asset "https://huggingface.co/lllyasviel/sd_control_collection/resolve/main/diffusers_xl_canny_mid.safetensors" \
-               "$CONTROLNET_PATH" \
-               "control_canny_xl.safetensors"
+# Canny ControlNet XL
+aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+  "https://huggingface.co/lllyasviel/sd_control_collection/resolve/main/sail_control_canny_sdxl.safetensors" \
+  -d "$CN_PATH" -o control_canny_xl.safetensors
 
-# 5. REALISMUS-LORAS DOWNLOADEN (Schleifen-System)
-# Liste der IDs und Namen für natürliche Körper & Hauttexturen
-LORAS=(
-    "135931:detail_tweaker_xl.safetensors"        # Für Hautporen & Details
-    "257744:skin_texture_realism.safetensors"     # Gegen den Plastik-Look
-    "218121:human_anatomy_fix.safetensors"       # Natürliche Proportionen
-    "122832:film_grain_style.safetensors"         # Authentischer Kamera-Look
-)
+# 8. Realismus LoRAs
+echo "Lade LoRAs..."
 
-echo "Lade Realismus-LoRAs via aria2..."
-for lora in "${LORAS[@]}"; do
-    ID="${lora%%:*}"
-    NAME="${lora#*:}"
-    download_asset "https://civitai.com/api/download/models/$ID?token=$CIVITAI_TOKEN" "$LORA_PATH" "$NAME"
-done
+# Detail Tweaker XL
+aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+  "https://civitai.com/api/download/models/135931?token=$CIVITAI_TOKEN" \
+  -d "$LORA_PATH" -o detail_tweaker_xl.safetensors
+
+# Skin Texture Realism
+aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+  "https://civitai.com/api/download/models/257744?token=$CIVITAI_TOKEN" \
+  -d "$LORA_PATH" -o skin_texture_realism.safetensors
+
+# Human Anatomy Fix
+aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+  "https://civitai.com/api/download/models/218121?token=$CIVITAI_TOKEN" \
+  -d "$LORA_PATH" -o human_anatomy_fix.safetensors
+
+# Film Grain & Photography Style
+aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+  "https://civitai.com/api/download/models/122832?token=$CIVITAI_TOKEN" \
+  -d "$LORA_PATH" -o film_grain_style.safetensors
+
+# 9. Upscaler
+echo "Lade Upscaler..."
+aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
+  "https://civitai.com/api/download/models/125843?type=Model&format=PickleTensor&token=$CIVITAI_TOKEN" \
+  -d "$ESRGAN_PATH" -o 4x-UltraSharp.pth
 
 echo "=============================================================================="
-echo "PROVISIONING ABGESCHLOSSEN: Juggernaut XL Studio ist einsatzbereit!"
+echo "PROVISIONING ERFOLGREICH: Alle Pfade korrigiert und Modelle geladen!"
 echo "=============================================================================="
