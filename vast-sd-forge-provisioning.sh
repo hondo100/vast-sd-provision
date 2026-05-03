@@ -92,14 +92,15 @@ if [ ! -f "$LORA_PATH/realface_portrait.safetensors" ]; then
     || echo "[PROV] WARNUNG: realface – ToS auf civitai.com/models/1563692 bestätigen!"
 fi
 
-# ─── 13. LoRA: Cinematic Film Grain XL (Ersatz für gelöschte ID 122832) ────────
-# civitai.com/models/214591
-# versionId 242008 einmalig auf der Civitai-Seite verifizieren!
+# ─── 13. LoRA: Touch of Grain SDXL (Ersatz für gelöschte ID 122832) ───────────
+# civitai.com/models/1789604 – trainiert auf Sony A7III, SDXL 1.0
+# Trigger Word: "grain" oder "film grain"
+# versionId einmalig auf der Civitai-Seite verifizieren!
 if [ ! -f "$LORA_PATH/film_grain_style.safetensors" ]; then
     aria2c --console-log-level=error -c -x 16 -s 16 -k 1M \
-        "https://civitai.com/api/download/models/242008?token=${CIVITAI_TOKEN}" \
+        "https://civitai.com/api/download/models/2009876?token=${CIVITAI_TOKEN}" \
         -d "$LORA_PATH" -o film_grain_style.safetensors \
-    || echo "[PROV] WARNUNG: film_grain – ToS auf civitai.com/models/214591 bestätigen!"
+    || echo "[PROV] WARNUNG: film_grain – ToS auf civitai.com/models/1789604 bestätigen!"
 fi
 
 # ─── 14. Upscaler: 4x-UltraSharp ─────────────────────────────────────────────
