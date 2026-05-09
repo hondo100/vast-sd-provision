@@ -1,10 +1,35 @@
-# --- MODELLE (Civitai IDs) ---
-453710|Stable-diffusion|Juggernaut_XL_v9.safetensors
-290640|Stable-diffusion|SVD_XT_1_1.safetensors
+#################################################################
+# SECTION 1: HUGGINGFACE MODELS (Direkte URLs)
+# Vorteil: Hohe Stabilität, kein API-Key notwendig.
+#################################################################
 
-# --- LORAS (Civitai IDs) ---
-135867|Lora|detail_tweaker_xl.safetensors
-155700|Lora|skin_detail_xl.safetensors
+# Juggernaut XL v9
+https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/resolve/main/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors|Stable-diffusion|Juggernaut-XL-v9.safetensors
+
+# SVD XT 1.1 (StabilityAI offiziell)
+https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors|Stable-diffusion|svd_xt_1_1.safetensors
+
+# Detail Tweaker XL
+https://huggingface.co/OedoSoldier/detail-tweaker-xl/resolve/main/detail_tweaker_xl.safetensors|Lora|detail_tweaker_xl.safetensors
+
+# Skin Detail XL
+https://huggingface.co/n670/skin_detail_xl/resolve/main/skin_detail_xl.safetensors|Lora|skin_detail_xl.safetensors
+
+
+#################################################################
+# SECTION 2: CIVITAI RESOURCES (Model-IDs)
+# Diese IDs werden vom Skript automatisch in Download-URLs umgewandelt.
+#################################################################
+
+# Real-Vis XL Enhancer
 121612|Lora|real-vis-xl-enhancer.safetensors
+
+# Film Grain Cinematic
 202640|Lora|film_grain_cinematic.safetensors
+
+# Perfect Eyes XL
 254051|Lora|perfect_eyes_xl.safetensors
+
+#################################################################
+# ENDE DER LISTE
+#################################################################
