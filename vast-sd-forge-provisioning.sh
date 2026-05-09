@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Pfade innerhalb der Vast.ai Instanz (Forge Standard)
+# HINWEIS: Prüfe ob dein Pfad /stable-diffusion-webui oder /stable-diffusion-webui-forge ist!
 BASE_PATH="/workspace/stable-diffusion-webui"
 MODELS_DIR="$BASE_PATH/models"
 EXTENSIONS_DIR="$BASE_PATH/extensions"
@@ -43,29 +44,39 @@ while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
             echo "ℹ️ Extension $NAME already exists, skipping."
         fi
     else
-        # Es ist ein Modell/LoRA/Upscaler
+        # Verzeichnis erstellen
         DEST_DIR="$MODELS_DIR/$TYPE"
         mkdir -p "$DEST_DIR"
 
-        # URL-Logik: HuggingFace vs Civitai ID
-        if [[ "$SOURCE" == http* ]]; then
-            DOWNLOAD_URL="$SOURCE"
-            AUTH_HEADER="Authorization: Bearer $HF_TOKEN"
-        else
+        # Dynamisches Header-Management
+        # Wir starten mit einem Browser-User-Agent (wichtig für Civitai)
+        EXTRA_HEADERS="--header='User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'"
+
+        if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
+            # Es ist eine Civitai-ID
             DOWNLOAD_URL="https://civitai.com/api/download/models/${SOURCE}?token=${CIVITAI_KEY}"
-            AUTH_HEADER="User-Agent: Mozilla/5.0"
+        else
+            # Es ist eine URL
+            DOWNLOAD_URL="$SOURCE"
+            # Falls HuggingFace, füge den Token hinzu
+            if [[ "$SOURCE" == *"huggingface.co"* ]]; then
+                EXTRA_HEADERS="--header='Authorization: Bearer $HF_TOKEN' --header='User-Agent: Mozilla/5.0'"
+            fi
         fi
 
         echo "📥 Downloading $NAME to $TYPE/..."
-        # -x 16 -s 16 für maximale Download-Geschwindigkeit
-        aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-               --header="$AUTH_HEADER" \
-               -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "$DOWNLOAD_URL"
+        
+        # aria2c Ausführung
+        # eval wird genutzt, um die Header-Strings korrekt zu übergeben
+        eval aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
+                "$EXTRA_HEADERS" \
+                -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true --summary-interval=10 \
+                "'$DOWNLOAD_URL'"
 
         if [ $? -eq 0 ]; then
             echo "✅ [SUCCESS] Saved to $TYPE/$NAME"
         else
-            echo "❌ [FAILED] $NAME"
+            echo "❌ [FAILED] $NAME - Check Link or Token!"
         fi
     fi
 done < "$LIST_FILE"
