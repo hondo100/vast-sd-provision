@@ -29,4 +29,5 @@ https://huggingface.co/OedoSoldier/detail-tweaker-xl/resolve/main/detail_tweaker
 # Perfect Eyes XL (Version ID)
 285606|Lora|perfect_eyes_xl.safetensors
 
+
 #################################################################
