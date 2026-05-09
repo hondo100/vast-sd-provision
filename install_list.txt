@@ -5,15 +5,15 @@ https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/resolve/main/Juggernaut-XL-
 # --- VIDEO ---
 https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors|svd|svd_xt_1_1.safetensors
 
-# --- LORAS (Civitai) ---
+# --- LORAS ---
 135867|Lora|detail_tweaker_xl.safetensors
 340833|Lora|skin_detail_xl.safetensors
 159212|Lora|film_grain_cinematic.safetensors
 128461|Lora|perfect_eyes_xl.safetensors
 
-# --- UPSCALER (ESRGAN) ---
+# --- UPSCALER ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth|ESRGAN|4x-UltraSharp.pth
-https://huggingface.co/gemasai/Siax/resolve/main/Siax_200k.pth|ESRGAN|Siax_200k.pth
+https://huggingface.co/Linaqruf/esrgan-models/resolve/main/Siax_200k.pth|ESRGAN|Siax_200k.pth
 
 # --- EXTENSIONS ---
 https://github.com/thomasasfk/sd-webui-aspect-ratio-helper|extensions|aspect-ratio-helper
