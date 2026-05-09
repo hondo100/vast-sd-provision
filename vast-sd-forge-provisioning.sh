@@ -4,9 +4,9 @@ echo "==========================================================="
 echo "🚀 VAST.AI PROVISIONING: STARTING"
 echo "==========================================================="
 
-# 1. System-Tools nachinstallieren
+# 1. System-Tools nachinstallieren (Paketname ist 'aria2')
 echo "--- Checking System Tools ---"
-apt-get update && apt-get install -y aria2c git curl python3-pip
+apt-get update && apt-get install -y aria2 git curl python3-pip python3-venv
 
 # 2. Forge-Pfad prüfen oder Forge installieren
 if [ -d "/workspace/stable-diffusion-webui-forge" ]; then
@@ -21,6 +21,9 @@ else
     git clone https://github.com/lllyasviel/stable-diffusion-webui-forge.git
     BASE_PATH="/workspace/stable-diffusion-webui-forge"
 fi
+
+# WICHTIG: In das Verzeichnis wechseln, bevor es weitergeht
+cd "$BASE_PATH"
 
 MODELS_DIR="$BASE_PATH/models"
 EXTENSIONS_DIR="$BASE_PATH/extensions"
@@ -45,7 +48,6 @@ while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
         DEST_DIR="$MODELS_DIR/$TYPE"
         mkdir -p "$DEST_DIR"
         
-        # Download-Logik
         EXTRA_HEADERS="--header='User-Agent: Mozilla/5.0'"
         if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
             DOWNLOAD_URL="https://civitai.com/api/download/models/${SOURCE}?token=${CIVITAI_KEY}"
@@ -55,6 +57,7 @@ while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
         fi
         
         echo "📥 Downloading $NAME..."
+        # Hier nutzen wir jetzt den korrekten Befehl 'aria2c' aus dem Paket 'aria2'
         aria2c --console-log-level=warn -x 16 -s 16 -k 1M $EXTRA_HEADERS -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "$DOWNLOAD_URL"
     fi
 done < "$LIST_FILE"
@@ -63,10 +66,9 @@ echo "==========================================================="
 echo "🎉 STARTING FORGE"
 echo "==========================================================="
 
-cd $BASE_PATH
-# Sicherstellen, dass Anforderungen installiert sind (falls Forge neu geklont wurde)
-if [ ! -f "venv/bin/python3" ]; then
-    pip install -r requirements.txt
-fi
+# Sicherstellen, dass wir im richtigen Verzeichnis sind
+cd "$BASE_PATH"
 
+# Forge braucht oft ein spezielles Environment, aber wir starten es direkt
+# Das Image auf Vast hat meistens schon alle Requirements, daher versuchen wir den direkten Start
 python3 launch.py --listen --port 7860 --enable-insecure-extension-access --theme dark --xformers
