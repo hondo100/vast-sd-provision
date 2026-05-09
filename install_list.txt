@@ -1,5 +1,5 @@
 # --- CHECKPOINTS ---
-# Juggernaut XL v9 (Korrigierter Pfad vom stablediffusionapi-Mirror)
+# Juggernaut XL v9 (Verifizierter Mirror-Link ohne Redirect-Hölle)
 https://huggingface.co/stablediffusionapi/juggernaut-xl-v9/resolve/main/juggernautXL_v9RdPhoto2Lightning.safetensors|Stable-diffusion|Juggernaut-XL-v9.safetensors
 2925778|Lora|real-vis-xl-enhancer.safetensors
 
@@ -9,14 +9,14 @@ https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve
 # --- LORAS ---
 135867|Lora|detail_tweaker_xl.safetensors
 340833|Lora|skin_detail_xl.safetensors
-# Film Grain - Wechsel auf die verifizierte Civitai-VERSION-ID (nicht Modell-ID)
-120461|Lora|film_grain_cinematic.safetensors
+# Film Grain - Jetzt mit der expliziten Dateiverknüpfung
+133832|Lora|film_grain_cinematic.safetensors
 128461|Lora|perfect_eyes_xl.safetensors
 
 # --- UPSCALER ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth|ESRGAN|4x-UltraSharp.pth
-# Siax - Pfad-Korrektur (Großschreibung beachten!)
-https://huggingface.co/guoyww/AnimateDiff/resolve/main/utils/Siax_200k.pth|ESRGAN|Siax_200k.pth
+# Siax - Korrigierter Pfad (Großschreibung!)
+https://huggingface.co/datasets/Gokay/Upscalers/resolve/main/Siax_200k.pth|ESRGAN|Siax_200k.pth
 
 # --- EXTENSIONS ---
 https://github.com/thomasasfk/sd-webui-aspect-ratio-helper|extensions|aspect-ratio-helper
