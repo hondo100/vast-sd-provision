@@ -1,4 +1,4 @@
-# --- CHECKPOINTS (Civitai ID ist hier am stabilsten) ---
+# --- CHECKPOINTS ---
 712905|Stable-diffusion|Juggernaut-XL-v9.safetensors
 2925778|Lora|real-vis-xl-enhancer.safetensors
 
@@ -11,7 +11,7 @@ https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve
 159212|Lora|film_grain_cinematic.safetensors
 128461|Lora|perfect_eyes_xl.safetensors
 
-# --- UPSCALER (Sicherheits-Mirror) ---
+# --- UPSCALER ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth|ESRGAN|4x-UltraSharp.pth
 https://huggingface.co/ZaneHe/Upscalers/resolve/main/Siax_200k.pth|ESRGAN|Siax_200k.pth
 
