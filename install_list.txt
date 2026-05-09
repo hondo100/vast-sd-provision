@@ -18,7 +18,7 @@ https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve
 135867|Lora|detail_tweaker_xl.safetensors
 
 # Skin Detail XL (Version-ID: 155700)
-155700|Lora|skin_detail_xl.safetensors
+340833|Lora|skin_detail_xl.safetensors
 
 # Real-Vis XL Enhancer (Version-ID: 135442)
 135442|Lora|real-vis-xl-enhancer.safetensors
