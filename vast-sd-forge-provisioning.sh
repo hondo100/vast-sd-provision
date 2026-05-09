@@ -1,83 +1,76 @@
 #!/bin/bash
-# Kernel-Skript mit erweiterter Fehlerprüfung und Logging
 
-REAL_FORGE="/opt/workspace-internal/stable-diffusion-webui-forge"
-VENV_PYTHON="/venv/main/bin/python3"
-STORAGE_BASE="/workspace/models"
-DEBUG_LOG="/workspace/provisioning_debug.log"
+# --- KONFIGURATION (Wird über On-start Script befüllt) ---
+# export GITHUB_PAT="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"
+# export HF_TOKEN="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"
+# export CIVITAI_KEY="dcd04020c1da7871d43d7f2c5fa0dbf2"
 
-# Hilfsfunktion für Fehlermeldungen
-log_error() {
-    echo "[FEHLER] $(date +'%H:%M:%S'): $1" >> "$DEBUG_LOG"
-}
+# Pfade innerhalb der Vast.ai Instanz (Standard für Forge/WebUI)
+STORAGE_BASE="/workspace/stable-diffusion-webui/models"
+LIST_FILE="/workspace/install_list.txt"
 
-echo "[INFO] Starte Kernel-Provisioning..." >> "$DEBUG_LOG"
+echo "-----------------------------------------------------------"
+echo "Vast.ai Provisioning: Starting Model Setup"
+echo "-----------------------------------------------------------"
 
-# 1. System-Vorbereitung (Sleep gem. Doku)
-sleep 20 [cite: 11]
-apt-get update && apt-get install -y aria2 >> "$DEBUG_LOG" 2>&1
-mkdir -p "$STORAGE_BASE/Stable-diffusion" "$STORAGE_BASE/Lora"
+# 1. install_list.txt von GitHub laden
+LIST_URL="https://api.github.com/repos/hondo100/vast-sd-provision/contents/install_list.txt"
+echo "Fetching install_list.txt..."
 
-# 2. Liste laden
-LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/install_list.txt"
-curl -s -L -H "Authorization: token $GITHUB_PAT" "$LIST_URL" -o "/workspace/install_list.txt"
+curl -s -H "Authorization: token $GITHUB_PAT" \
+     -H "Accept: application/vnd.github.v3.raw" \
+     "$LIST_URL" -o "$LIST_FILE"
 
-if [ ! -s "/workspace/install_list.txt" ]; then
-    log_error "Modell-Liste (install_list.txt) konnte nicht geladen werden oder ist leer."
+if [ ! -f "$LIST_FILE" ]; then
+    echo "ERROR: Could not load install_list.txt"
     exit 1
 fi
 
-# 3. Download-Schleife
-while read -r line || [ -n "$line" ]; do
-    [[ "$line" =~ ^#.* ]] || [[ -z "$line" ]] && continue
-    
-    SOURCE=$(echo $line | cut -d'|' -f1)
-    TYPE=$(echo $line | cut -d'|' -f2)
-    NAME=$(echo $line | cut -d'|' -f3)
-    
-    if [[ $SOURCE == http* ]]; then
+# 2. Zeilenweise abarbeiten
+while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
+    # Kommentare und Leerzeilen überspringen
+    [[ "$SOURCE" =~ ^#.*$ ]] && continue
+    [[ -z "$SOURCE" ]] && continue
+
+    # Pfad säubern
+    SOURCE=$(echo "$SOURCE" | xargs)
+    TYPE=$(echo "$TYPE" | xargs)
+    NAME=$(echo "$NAME" | xargs)
+
+    echo "Processing: $NAME ..."
+
+    # Zielverzeichnis erstellen
+    DEST_DIR="$STORAGE_BASE/$TYPE"
+    mkdir -p "$DEST_DIR"
+
+    # URL bestimmen
+    if [[ "$SOURCE" == http* ]]; then
         DOWNLOAD_URL="$SOURCE"
+        # Header für HuggingFace falls nötig
+        AUTH_HEADER="Authorization: Bearer $HF_TOKEN"
     else
-        DOWNLOAD_URL="https://civitai.com/api/download/models/$SOURCE"
+        # Civitai Logik mit API Key
+        DOWNLOAD_URL="https://civitai.com/api/download/models/${SOURCE}?token=${CIVITAI_KEY}"
+        AUTH_HEADER="User-Agent: Mozilla/5.0"
     fi
 
-    TARGET_FILE="$STORAGE_BASE/$TYPE/$NAME"
-    
-    if [ ! -f "$TARGET_FILE" ]; then
-        echo "[DOWNLOAD] Versuche $NAME zu laden..." >> "$DEBUG_LOG"
-        
-        # aria2 Start mit Log-Output
-        aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" -o "$NAME" -d "$STORAGE_BASE/$TYPE" "$DOWNLOAD_URL" >> "$DEBUG_LOG" 2>&1
-        STATUS=$?
+    # Download mit aria2c (schnell und robust)
+    echo "Downloading from: $DOWNLOAD_URL"
+    aria2c --console-log-level=warn \
+           -x 16 -s 16 -k 1M \
+           --header="$AUTH_HEADER" \
+           --summary-interval=10 \
+           -o "$NAME" -d "$DEST_DIR" \
+           "$DOWNLOAD_URL"
 
-        if [ $STATUS -eq 0 ]; then
-            echo "[ERFOLG] $NAME erfolgreich heruntergeladen." >> "$DEBUG_LOG"
-            chmod 666 "$TARGET_FILE" [cite: 22]
-        else
-            case $STATUS in
-                22) log_error "Datei nicht gefunden (404) für $NAME. Prüfe die URL/ID: $SOURCE" ;;
-                16) log_error "Netzwerkfehler/Timeout bei $NAME. Server ist evtl. überlastet." ;;
-                *)  log_error "Download fehlgeschlagen für $NAME. aria2 Exit-Code: $STATUS" ;;
-            esac
-            # Falls Download fehlschlägt: lösche evtl. korrupte Teil-Dateien
-            rm -f "$TARGET_FILE"
-        fi
+    if [ $? -eq 0 ]; then
+        echo "[SUCCESS] $NAME installed in $TYPE"
+    else
+        echo "[ERROR] Failed to download $NAME"
     fi
-    
-    # Symlink erstellen (Nur bei Erfolg)
-    if [ -f "$TARGET_FILE" ]; then
-        FORGE_DEST="$REAL_FORGE/models/$TYPE/$NAME"
-        if [ ! -L "$FORGE_DEST" ] && [ ! -f "$FORGE_DEST" ]; then
-            ln -s "$TARGET_FILE" "$FORGE_DEST" [cite: 26, 38]
-        fi
-    fi
-done < "/workspace/install_list.txt"
 
-# 4. Start-Konfiguration (Flags aus Doku)
-ARGS="--listen --port 8080 --enable-insecure-extension-access --xformers --skip-python-version-check --cuda-malloc --cors-allow-origins=*" [cite: 29, 33]
-echo "export COMMANDLINE_ARGS=\"$ARGS\"" > "$REAL_FORGE/webui-user.sh"
+done < "$LIST_FILE"
 
-# 5. Start (via venv-Python)
-cd "$REAL_FORGE" [cite: 32]
-echo "[START] Forge wird jetzt initialisiert..." >> "$DEBUG_LOG"
-$VENV_PYTHON launch.py $ARGS >> /workspace/forge_boot.log 2>&1 & [cite: 33, 42]
+echo "-----------------------------------------------------------"
+echo "Provisioning Complete!"
+echo "-----------------------------------------------------------"
