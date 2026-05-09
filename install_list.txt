@@ -1,5 +1,5 @@
 # --- CHECKPOINTS ---
-# Juggernaut XL v11 (basierend auf deinem Link)
+# Juggernaut XL v11 / X (Verifizierte Version-ID für direkte API-Downloads)
 1759168|Stable-diffusion|Juggernaut-XL-v9.safetensors
 2925778|Lora|real-vis-xl-enhancer.safetensors
 
@@ -9,14 +9,13 @@ https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve
 # --- LORAS ---
 135867|Lora|detail_tweaker_xl.safetensors
 340833|Lora|skin_detail_xl.safetensors
-# Film Grain (SDXL Version-ID)
 133832|Lora|film_grain_cinematic.safetensors
 128461|Lora|perfect_eyes_xl.safetensors
 
 # --- UPSCALER ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth|ESRGAN|4x-UltraSharp.pth
-# Siax (Verifizierter Mirror, der im Browser lädt)
-https://huggingface.co/ZaneHe/Upscalers/resolve/main/Siax_200k.pth|ESRGAN|Siax_200k.pth
+# Siax_200k (Verifizierter Pfad im Upscaler-Repository)
+https://huggingface.co/uwu/upscalers/resolve/main/ESRGAN/Siax_200k.pth|ESRGAN|Siax_200k.pth
 
 # --- EXTENSIONS ---
 https://github.com/thomasasfk/sd-webui-aspect-ratio-helper|extensions|aspect-ratio-helper
