@@ -1,0 +1,10 @@
+# --- MODELLE (Civitai IDs) ---
+453710|Stable-diffusion|Juggernaut_XL_v9.safetensors
+290640|Stable-diffusion|SVD_XT_1_1.safetensors
+
+# --- LORAS (Civitai IDs) ---
+135867|Lora|detail_tweaker_xl.safetensors
+155700|Lora|skin_detail_xl.safetensors
+121612|Lora|real-vis-xl-enhancer.safetensors
+202640|Lora|film_grain_cinematic.safetensors
+254051|Lora|perfect_eyes_xl.safetensors
