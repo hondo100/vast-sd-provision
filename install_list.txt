@@ -1,4 +1,5 @@
 # --- CHECKPOINTS ---
+# Juggernaut XL v11 / X
 1759168|Stable-diffusion|Juggernaut-XL-v9.safetensors
 2925778|Lora|real-vis-xl-enhancer.safetensors
 
@@ -13,8 +14,8 @@ https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve
 
 # --- UPSCALER ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth|ESRGAN|4x-UltraSharp.pth
-# Siax: FINALER FIX via GitHub Raw (Umgeht HuggingFace-API Probleme)
-https://github.com/phymit/stable-diffusion-webui/raw/master/models/ESRGAN/Siax_200k.pth|ESRGAN|Siax_200k.pth
+# Siax via Civitai (Deine gefundene Version-ID)
+164677|ESRGAN|Siax_200k.pth
 
 # --- EXTENSIONS ---
 https://github.com/thomasasfk/sd-webui-aspect-ratio-helper|extensions|aspect-ratio-helper
