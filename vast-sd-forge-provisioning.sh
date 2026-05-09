@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# --- KONFIGURATION (Wird über On-start Script befüllt) ---
-# export GITHUB_PAT="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"
-# export HF_TOKEN="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"
-# export CIVITAI_KEY="dcd04020c1da7871d43d7f2c5fa0dbf2"
+# --- KONFIGURATION (Wird über On-start Script befüllt, nicht hier eingeben) ---
+# export GITHUB_PAT=".."
+# export HF_TOKEN="..."
+# export CIVITAI_KEY="..."
 
 # Pfade innerhalb der Vast.ai Instanz (Standard für Forge/WebUI)
 STORAGE_BASE="/workspace/stable-diffusion-webui/models"
