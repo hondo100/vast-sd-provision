@@ -1,6 +1,6 @@
 # --- CHECKPOINTS ---
-# Juggernaut XL v9 (Direkter Pfad über stablediffusionapi - Case Sensitive!)
-https://huggingface.co/stablediffusionapi/juggernaut-xl-v9/resolve/main/juggernautXL_v9RdPhoto2Lightning.safetensors|Stable-diffusion|Juggernaut-XL-v9.safetensors
+# Juggernaut XL v9 (Hinter dem Diffusers-Pfad versteckt)
+https://huggingface.co/stablediffusionapi/juggernaut-xl-v9/resolve/main/unet/diffusion_pytorch_model.safetensors|Stable-diffusion|Juggernaut-XL-v9.safetensors
 2925778|Lora|real-vis-xl-enhancer.safetensors
 
 # --- VIDEO ---
@@ -9,14 +9,14 @@ https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve
 # --- LORAS ---
 135867|Lora|detail_tweaker_xl.safetensors
 340833|Lora|skin_detail_xl.safetensors
-# Film Grain: Wechsel auf HuggingFace Mirror (Civitai-ID scheint Gated zu sein)
-https://huggingface.co/Proompt/FilmGrain/resolve/main/FilmGrain.safetensors|Lora|film_grain_cinematic.safetensors
+# Film Grain: Civitai ID 133832 ist die korrekte Version-ID für SDXL
+133832|Lora|film_grain_cinematic.safetensors
 128461|Lora|perfect_eyes_xl.safetensors
 
 # --- UPSCALER ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth|ESRGAN|4x-UltraSharp.pth
-# Siax: Stabiler Pfad aus dem Upscaler-Dataset
-https://huggingface.co/datasets/Gokay/Upscalers/resolve/main/Siax_200k.pth|ESRGAN|Siax_200k.pth
+# Siax: Verifizierter Link aus dem gemasai-Repo
+https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth|ESRGAN|Siax_200k.pth
 
 # --- EXTENSIONS ---
 https://github.com/thomasasfk/sd-webui-aspect-ratio-helper|extensions|aspect-ratio-helper
