@@ -1,31 +1,31 @@
 #################################################################
-# SECTION 1: HUGGINGFACE MODELS
+# SECTION 1: HUGGINGFACE (URLs)
 #################################################################
 
-# Juggernaut XL v9 (Öffentlich)
+# Juggernaut XL v9
 https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/resolve/main/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors|Stable-diffusion|Juggernaut-XL-v9.safetensors
 
-# SVD XT 1.1 (Erfordert nun oft Token)
+# SVD XT 1.1
 https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors|Stable-diffusion|svd_xt_1_1.safetensors
 
-# Detail Tweaker XL
+# Detail Tweaker XL (Korrigierter Pfad)
 https://huggingface.co/OedoSoldier/detail-tweaker-xl/resolve/main/detail_tweaker_xl.safetensors|Lora|detail_tweaker_xl.safetensors
 
-# Skin Detail XL
-https://huggingface.co/n670/skin_detail_xl/resolve/main/skin_detail_xl.safetensors|Lora|skin_detail_xl.safetensors
-
 
 #################################################################
-# SECTION 2: CIVITAI RESOURCES (KORRIGIERTE VERSION-IDs)
+# SECTION 2: CIVITAI (Geprüfte Version-IDs)
 #################################################################
 
-# Real-Vis XL Enhancer (Version ID: 135442 statt 121612)
+# Skin Detail XL (Version-ID: 155700)
+155700|Lora|skin_detail_xl.safetensors
+
+# Real-Vis XL Enhancer (Version-ID: 135442)
 135442|Lora|real-vis-xl-enhancer.safetensors
 
-# Film Grain Cinematic (Version ID: 227993 statt 202640)
+# Film Grain Cinematic (Version-ID: 227993)
 227993|Lora|film_grain_cinematic.safetensors
 
-# Perfect Eyes XL
+# Perfect Eyes XL (Version-ID: 285606)
 285606|Lora|perfect_eyes_xl.safetensors
 
 #################################################################
