@@ -1,104 +1,83 @@
 #!/bin/bash
-# =========================================================
-# vast-sd-forge-provisioning.sh
-# Wird von ai-dock automatisch VOR Forge-Start ausgefuehrt.
-# Kein Forge-Start hier - das macht ai-dock (init.sh).
-# =========================================================
+# Kernel-Skript mit erweiterter Fehlerprüfung und Logging
 
-echo "-------------------------------------------------------"
-echo "START PROVISIONING: High-Speed 4K-Setup"
-echo "-------------------------------------------------------"
+REAL_FORGE="/opt/workspace-internal/stable-diffusion-webui-forge"
+VENV_PYTHON="/venv/main/bin/python3"
+STORAGE_BASE="/workspace/models"
+DEBUG_LOG="/workspace/provisioning_debug.log"
 
-# Civitai Token aus Environment Variable (gesetzt im Vast Template)
-TOKEN="${CIVITAI_TOKEN}"
-if [[ -z "$TOKEN" ]]; then
-  echo "FEHLER: CIVITAI_TOKEN nicht gesetzt!"
-  exit 1
-fi
-
-# Schnell-Installation von aria2
-apt-get update -qq && apt-get install -y -qq aria2
-
-# =========================================================
-# MODELL-IDs
-# =========================================================
-ID_JUGGERNAUT="453710"
-ID_SVD_XT="290640"
-
-LORAS=(
-"135867:detail_tweaker_xl.safetensors"
-"155700:skin_detail_xl.safetensors"
-"121612:real-vis-xl-enhancer.safetensors"
-"202640:film_grain_cinematic.safetensors"
-"254051:perfect_eyes_xl.safetensors"
-)
-
-# =========================================================
-# PFADE (ai-dock Forge)
-# =========================================================
-BASE_PATH="/opt/stable-diffusion-webui-forge/models"
-CHECKPOINT_DIR="$BASE_PATH/Stable-diffusion"
-SVD_DIR="$BASE_PATH/svd"
-LORA_DIR="$BASE_PATH/Lora"
-UPSCALER_DIR="$BASE_PATH/ESRGAN"
-
-mkdir -p "$CHECKPOINT_DIR" "$SVD_DIR" "$LORA_DIR" "$UPSCALER_DIR"
-
-# =========================================================
-# HILFSFUNKTION: TURBO-DOWNLOAD (parallel via aria2c)
-# =========================================================
-function turbo_download() {
-  local id=$1
-  local dest=$2
-  local filename=$3
-  local url="https://civitai.com/api/download/models/$id"
-
-  if [ -f "$dest/$filename" ]; then
-    echo ">> OK (vorhanden): $filename"
-  else
-    echo ">> DOWNLOAD: $filename"
-    local final_url
-    if [[ "$url" == *\?* ]]; then
-      final_url="${url}&token=${TOKEN}"
-    else
-      final_url="${url}?token=${TOKEN}"
-    fi
-    aria2c -x 16 -s 16 -k 1M \
-      --console-log-level=error \
-      --summary-interval=0 \
-      --check-certificate=false \
-      -d "$dest" -o "$filename" "$final_url" &
-  fi
+# Hilfsfunktion für Fehlermeldungen
+log_error() {
+    echo "[FEHLER] $(date +'%H:%M:%S'): $1" >> "$DEBUG_LOG"
 }
 
-# =========================================================
-# DOWNLOADS (PARALLEL)
-# =========================================================
+echo "[INFO] Starte Kernel-Provisioning..." >> "$DEBUG_LOG"
 
-# A. Hauptmodelle
-turbo_download "$ID_JUGGERNAUT" "$CHECKPOINT_DIR" "juggernaut_xl.safetensors"
-turbo_download "$ID_SVD_XT"     "$SVD_DIR"         "svd_xt_11.safetensors"
+# 1. System-Vorbereitung (Sleep gem. Doku)
+sleep 20 [cite: 11]
+apt-get update && apt-get install -y aria2 >> "$DEBUG_LOG" 2>&1
+mkdir -p "$STORAGE_BASE/Stable-diffusion" "$STORAGE_BASE/Lora"
 
-# B. LoRAs
-echo "--- LoRAs werden parallel geladen ---"
-for entry in "${LORAS[@]}"; do
-  IFS=":" read -r lora_id lora_name <<< "$entry"
-  turbo_download "$lora_id" "$LORA_DIR" "$lora_name"
-done
+# 2. Liste laden
+LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/install_list.txt"
+curl -s -L -H "Authorization: token $GITHUB_PAT" "$LIST_URL" -o "/workspace/install_list.txt"
 
-# C. Upscaler
-if [ ! -f "$UPSCALER_DIR/4x-UltraSharp.pth" ]; then
-  wget -q --show-progress \
-    -O "$UPSCALER_DIR/4x-UltraSharp.pth" \
-    "https://openmodeldb.info/models/4x-UltraSharp/download" &
+if [ ! -s "/workspace/install_list.txt" ]; then
+    log_error "Modell-Liste (install_list.txt) konnte nicht geladen werden oder ist leer."
+    exit 1
 fi
 
-# =========================================================
-# WARTEN BIS ALLE DOWNLOADS FERTIG
-# =========================================================
-echo "Warte auf Abschluss aller Downloads..."
-wait
+# 3. Download-Schleife
+while read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^#.* ]] || [[ -z "$line" ]] && continue
+    
+    SOURCE=$(echo $line | cut -d'|' -f1)
+    TYPE=$(echo $line | cut -d'|' -f2)
+    NAME=$(echo $line | cut -d'|' -f3)
+    
+    if [[ $SOURCE == http* ]]; then
+        DOWNLOAD_URL="$SOURCE"
+    else
+        DOWNLOAD_URL="https://civitai.com/api/download/models/$SOURCE"
+    fi
 
-echo "-------------------------------------------------------"
-echo "PROVISIONING BEENDET - Forge wird jetzt gestartet."
-echo "-------------------------------------------------------"
+    TARGET_FILE="$STORAGE_BASE/$TYPE/$NAME"
+    
+    if [ ! -f "$TARGET_FILE" ]; then
+        echo "[DOWNLOAD] Versuche $NAME zu laden..." >> "$DEBUG_LOG"
+        
+        # aria2 Start mit Log-Output
+        aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" -o "$NAME" -d "$STORAGE_BASE/$TYPE" "$DOWNLOAD_URL" >> "$DEBUG_LOG" 2>&1
+        STATUS=$?
+
+        if [ $STATUS -eq 0 ]; then
+            echo "[ERFOLG] $NAME erfolgreich heruntergeladen." >> "$DEBUG_LOG"
+            chmod 666 "$TARGET_FILE" [cite: 22]
+        else
+            case $STATUS in
+                22) log_error "Datei nicht gefunden (404) für $NAME. Prüfe die URL/ID: $SOURCE" ;;
+                16) log_error "Netzwerkfehler/Timeout bei $NAME. Server ist evtl. überlastet." ;;
+                *)  log_error "Download fehlgeschlagen für $NAME. aria2 Exit-Code: $STATUS" ;;
+            esac
+            # Falls Download fehlschlägt: lösche evtl. korrupte Teil-Dateien
+            rm -f "$TARGET_FILE"
+        fi
+    fi
+    
+    # Symlink erstellen (Nur bei Erfolg)
+    if [ -f "$TARGET_FILE" ]; then
+        FORGE_DEST="$REAL_FORGE/models/$TYPE/$NAME"
+        if [ ! -L "$FORGE_DEST" ] && [ ! -f "$FORGE_DEST" ]; then
+            ln -s "$TARGET_FILE" "$FORGE_DEST" [cite: 26, 38]
+        fi
+    fi
+done < "/workspace/install_list.txt"
+
+# 4. Start-Konfiguration (Flags aus Doku)
+ARGS="--listen --port 8080 --enable-insecure-extension-access --xformers --skip-python-version-check --cuda-malloc --cors-allow-origins=*" [cite: 29, 33]
+echo "export COMMANDLINE_ARGS=\"$ARGS\"" > "$REAL_FORGE/webui-user.sh"
+
+# 5. Start (via venv-Python)
+cd "$REAL_FORGE" [cite: 32]
+echo "[START] Forge wird jetzt initialisiert..." >> "$DEBUG_LOG"
+$VENV_PYTHON launch.py $ARGS >> /workspace/forge_boot.log 2>&1 & [cite: 33, 42]
