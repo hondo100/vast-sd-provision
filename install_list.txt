@@ -1,12 +1,11 @@
 #################################################################
-# SECTION 1: HUGGINGFACE MODELS (Direkte URLs)
-# Vorteil: Hohe Stabilität, kein API-Key notwendig.
+# SECTION 1: HUGGINGFACE MODELS
 #################################################################
 
-# Juggernaut XL v9
+# Juggernaut XL v9 (Öffentlich)
 https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/resolve/main/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors|Stable-diffusion|Juggernaut-XL-v9.safetensors
 
-# SVD XT 1.1 (StabilityAI offiziell)
+# SVD XT 1.1 (Erfordert nun oft Token)
 https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors|Stable-diffusion|svd_xt_1_1.safetensors
 
 # Detail Tweaker XL
@@ -17,19 +16,16 @@ https://huggingface.co/n670/skin_detail_xl/resolve/main/skin_detail_xl.safetenso
 
 
 #################################################################
-# SECTION 2: CIVITAI RESOURCES (Model-IDs)
-# Diese IDs werden vom Skript automatisch in Download-URLs umgewandelt.
+# SECTION 2: CIVITAI RESOURCES (KORRIGIERTE VERSION-IDs)
 #################################################################
 
-# Real-Vis XL Enhancer
-121612|Lora|real-vis-xl-enhancer.safetensors
+# Real-Vis XL Enhancer (Version ID: 135442 statt 121612)
+135442|Lora|real-vis-xl-enhancer.safetensors
 
-# Film Grain Cinematic
-202640|Lora|film_grain_cinematic.safetensors
+# Film Grain Cinematic (Version ID: 227993 statt 202640)
+227993|Lora|film_grain_cinematic.safetensors
 
 # Perfect Eyes XL
-254051|Lora|perfect_eyes_xl.safetensors
+285606|Lora|perfect_eyes_xl.safetensors
 
-#################################################################
-# ENDE DER LISTE
 #################################################################
