@@ -1,6 +1,6 @@
 # --- CHECKPOINTS ---
-# Juggernaut XL v9 - Verifizierte Version-ID
-133005|Stable-diffusion|Juggernaut-XL-v9.safetensors
+# Juggernaut XL v9 (Direkter Mirror-Link)
+https://huggingface.co/stablediffusionapi/juggernaut-xl-v9/resolve/main/juggernautXL_v9RdPhoto2Lightning.safetensors|Stable-diffusion|Juggernaut-XL-v9.safetensors
 2925778|Lora|real-vis-xl-enhancer.safetensors
 
 # --- VIDEO ---
@@ -9,13 +9,13 @@ https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve
 # --- LORAS ---
 135867|Lora|detail_tweaker_xl.safetensors
 340833|Lora|skin_detail_xl.safetensors
-# Neue, stabile ID für Film Grain
-159212|Lora|film_grain_cinematic.safetensors
+# Film Grain via HuggingFace Mirror (da ID 159212 blockiert scheint)
+https://huggingface.co/Proompt/FilmGrain/resolve/main/FilmGrain.safetensors|Lora|film_grain_cinematic.safetensors
 128461|Lora|perfect_eyes_xl.safetensors
 
 # --- UPSCALER ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth|ESRGAN|4x-UltraSharp.pth
-# Neuer, verifizierter Siax-Link
+# Siax via AnimateDiff Repository (sehr stabiler Pfad)
 https://huggingface.co/guoyww/AnimateDiff/resolve/main/utils/Siax_200k.pth|ESRGAN|Siax_200k.pth
 
 # --- EXTENSIONS ---
