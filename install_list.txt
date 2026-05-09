@@ -1,34 +1,19 @@
-#################################################################
-# SECTION 1: HUGGINGFACE MODELS (Direkt-Links)
-#################################################################
+# --- CHECKPOINTS ---
+https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/resolve/main/Juggernaut-XL-v9.safetensors|Stable-diffusion|Juggernaut-XL-v9.safetensors
+2925778|Lora|real-vis-xl-enhancer.safetensors
 
-# Juggernaut XL v9
-https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/resolve/main/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors|Stable-diffusion|Juggernaut-XL-v9.safetensors
+# --- VIDEO ---
+https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors|svd|svd_xt_1_1.safetensors
 
-# SVD XT 1.1 (StabilityAI)
-https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors|Stable-diffusion|svd_xt_1_1.safetensors
-
-
-#################################################################
-# SECTION 2: CIVITAI RESOURCES (Geprüfte Version-IDs)
-# Diese IDs entsprechen den exakten Datei-Versionen.
-#################################################################
-
-# Detail Tweaker XL (Version-ID: 135867)
+# --- LORAS (Civitai) ---
 135867|Lora|detail_tweaker_xl.safetensors
-
-# Skin Detail XL (Version-ID: 155700)
 340833|Lora|skin_detail_xl.safetensors
+159212|Lora|film_grain_cinematic.safetensors
+128461|Lora|perfect_eyes_xl.safetensors
 
-# Real-Vis XL Enhancer (Version-ID: 135442)
-135442|Lora|real-vis-xl-enhancer.safetensors
+# --- UPSCALER (ESRGAN) ---
+https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth|ESRGAN|4x-UltraSharp.pth
+https://huggingface.co/gemasai/Siax/resolve/main/Siax_200k.pth|ESRGAN|Siax_200k.pth
 
-# Film Grain Cinematic (Version-ID: 227993)
-227993|Lora|film_grain_cinematic.safetensors
-
-# Perfect Eyes XL (Version-ID: 285606)
-285606|Lora|perfect_eyes_xl.safetensors
-
-#################################################################
-# ENDE DER LISTE
-#################################################################
+# --- EXTENSIONS ---
+https://github.com/thomasasfk/sd-webui-aspect-ratio-helper|extensions|aspect-ratio-helper
