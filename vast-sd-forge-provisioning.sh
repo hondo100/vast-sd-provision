@@ -86,4 +86,4 @@ echo "==========================================================="
 
 # 3. START VON FORGE (Nutzt python3 für Ubuntu Noble)
 cd $BASE_PATH
-python3 launch.py --listen --port 8080 --enable-insecure-extension-access --theme dark --xformers
+python3 launch.py --listen --port 7860 --enable-insecure-extension-access --theme dark --xformers
