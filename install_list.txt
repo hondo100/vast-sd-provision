@@ -14,12 +14,32 @@
 # Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
 # ======================================================================================
 
+# ======================================================================================
+# NOMENKLATUR DER INSTALLATIONS-LISTE
+# Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
+# ======================================================================================
+
 # --- Checkpoint Modelle (SDXL) ---
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
 
-# ... (LoRAs und Upscaler bleiben gleich, da sie funktionieren) ...
+# --- Video Modelle (SVD) ---
+https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
-# --- Extensions (Präzise Branch-Links) ---
+# --- LoRA (XL) ---
+https://civitai.red/api/download/models/2925778?type=Model&format=SafeTensor | Lora | real-vis-xl-enhancer.safetensors
+https://civitai.com/api/download/models/518040?type=Model&format=SafeTensor | Lora | film_grain_cinematic.safetensors
+https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lora | perfect_eyes_xl.safetensors
+135929 | Lora | detail_tweaker_xl.safetensors
+165767 | Lora | skin_detail_xl.safetensors
+
+# --- Upscaler (ESRGAN) ---
+https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
+https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth | ESRGAN | Siax_200k.pth
+
+# --- Extensions (Branch-spezifische Korrektur) ---
+# wd14-tagger nutzt weiterhin 'master'
 https://github.com/toshiaki1729/stable-diffusion-webui-wd14-tagger/archive/refs/heads/master.zip | extensions | wd14-tagger
+# aspect-ratio-helper nutzt 'main'
 https://github.com/p1atdev/stable-diffusion-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
+# controlnet nutzt 'main'
 https://github.com/Mikubill/sd-webui-controlnet/archive/refs/heads/main.zip | extensions | sd-webui-controlnet
