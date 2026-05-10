@@ -3,16 +3,6 @@
 # Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
 # ======================================================================================
 
-# ======================================================================================
-# NOMENKLATUR DER INSTALLATIONS-LISTE
-# Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
-# ======================================================================================
-
-# ======================================================================================
-# NOMENKLATUR DER INSTALLATIONS-LISTE
-# Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
-# ======================================================================================
-
 # --- Checkpoint Modelle (SDXL) ---
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
 
@@ -30,11 +20,12 @@ https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lo
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
 https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth | ESRGAN | Siax_200k.pth
 
-# --- Extensions (Aktive Repositories) ---
-https://github.com/GuepardoApps/stable-diffusion-webui-wd14-tagger/archive/refs/heads/main.zip | extensions | wd14-tagger
+# --- Extensions (Verifizierte Links) ---
+# WD14-Tagger: Kataragi-Fork (Funktionierender Branch: master)
+https://github.com/Kataragi/stable-diffusion-webui-tagger-fork/archive/refs/heads/master.zip | extensions | wd14-tagger
 https://github.com/thomasasfk/sd-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
 https://github.com/Mikubill/sd-webui-controlnet/archive/refs/heads/main.zip | extensions | sd-webui-controlnet
 
-# --- WD14 Tagger Modell (Aus deinem Screenshot) ---
-# Wir legen das Modell direkt in den vorgesehenen Unterordner der Extension
+# --- WD14 Tagger Modell (Präventive Installation) ---
+# Das SwinV2 Modell aus deinem Screenshot für maximale Präzision
 https://huggingface.co/deepghs/wd14_tagger_with_embeddings/resolve/main/wd-v1-4-swinv2-tagger-v2.onnx | models/torch_deepdanbooru | wd-v1-4-swinv2-tagger-v2.onnx
