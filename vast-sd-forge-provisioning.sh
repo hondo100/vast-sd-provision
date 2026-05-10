@@ -112,5 +112,12 @@ fi
 
 # 6. Start von Forge
 echo "--- Provisioning beendet. Starte Forge ---"
-python3 launch.py --listen --port 7860 --xformers --pin-shared-memory \
-                  --cuda-malloc-async --cuda-stream --skip-python-version-check
+python3 launch.py \
+    --listen \
+    --port 7860 \
+    --enable-insecure-extension-access \
+    --xformers \
+    --pin-shared-memory \
+    --cuda-malloc-async \
+    --cuda-stream \
+    --skip-python-version-check
