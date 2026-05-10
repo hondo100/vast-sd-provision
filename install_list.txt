@@ -13,7 +13,7 @@ https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve
 135929 | Lora | detail_tweaker_xl.safetensors
 https://civitai.com/api/download/models/128461 | Lora | perfect_eyes_xl.safetensors
 135010 | Lora | real-vis-xl-enhancer.safetensors
-https://civitai.com/api/download/models/144594 | Lora | skin_detail_xl.safetensors
+https://civitai.com/api/download/models/340833 | Lora | skin_detail_xl.safetensors
 
 # --- UPSCALER (Manuell verifiziert) ---
 https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
