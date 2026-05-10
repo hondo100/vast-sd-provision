@@ -5,14 +5,20 @@ echo "🚀 VAST.AI PROVISIONING: STARTING"
 echo "==========================================================="
 
 # 1. System-Tools (Aria2 Paketname ist 'aria2')
-apt-get update && apt-get install -y aria2 git curl python3-pip python3-venv
+apt-get update && apt-get install -y aria2 git curl
 
-# 2. Forge-Pfad prüfen oder installieren
-if [ -d "/workspace/stable-diffusion-webui-forge" ]; then
+# 2. Forge-Pfad Suche (Optimiert für "SD Forge UI" Templates)
+if [ -f "/workspace/launch.py" ]; then
+    BASE_PATH="/workspace"
+    echo "✅ Forge found directly in /workspace"
+elif [ -d "/workspace/stable-diffusion-webui-forge" ]; then
     BASE_PATH="/workspace/stable-diffusion-webui-forge"
+    echo "✅ Forge found in /workspace/stable-diffusion-webui-forge"
 elif [ -d "/workspace/stable-diffusion-webui" ]; then
     BASE_PATH="/workspace/stable-diffusion-webui"
+    echo "✅ Forge found in /workspace/stable-diffusion-webui"
 else
+    echo "⚠️ Forge not found. Installing fresh..."
     cd /workspace
     git clone https://github.com/lllyasviel/stable-diffusion-webui-forge.git
     BASE_PATH="/workspace/stable-diffusion-webui-forge"
@@ -27,7 +33,7 @@ LIST_FILE="/tmp/install_list.txt"
 LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/install_list.txt"
 curl -s -L -H "Authorization: token $GITHUB_PAT" "$LIST_URL" -o "$LIST_FILE"
 
-# 4. Liste abarbeiten
+# 4. Downloads mit Aria2 (Robuste Version)
 while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
     [[ "$SOURCE" =~ ^#.*$ ]] && continue
     [[ -z "$SOURCE" ]] && continue
@@ -41,19 +47,16 @@ while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
         DEST_DIR="$MODELS_DIR/$TYPE"
         mkdir -p "$DEST_DIR"
         
-        # Vereinfachte Download-Logik ohne komplexe Header-Variablen
+        echo "📥 Downloading $NAME..."
         if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
-            DOWNLOAD_URL="https://civitai.com/api/download/models/${SOURCE}?token=${CIVITAI_KEY}"
-            echo "📥 Downloading $NAME from Civitai..."
-            aria2c --console-log-level=warn -x 16 -s 16 -k 1M -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "$DOWNLOAD_URL"
+            # Civitai
+            aria2c --console-log-level=warn -x 16 -s 16 -k 1M -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "https://civitai.com/api/download/models/${SOURCE}?token=${CIVITAI_KEY}"
         elif [[ "$SOURCE" == *"huggingface.co"* ]]; then
-            DOWNLOAD_URL="$SOURCE"
-            echo "📥 Downloading $NAME from HuggingFace..."
-            aria2c --console-log-level=warn -x 16 -s 16 -k 1M --header="Authorization: Bearer $HF_TOKEN" -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "$DOWNLOAD_URL"
+            # HuggingFace mit Token
+            aria2c --console-log-level=warn -x 16 -s 16 -k 1M --header="Authorization: Bearer $HF_TOKEN" -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "$SOURCE"
         else
-            DOWNLOAD_URL="$SOURCE"
-            echo "📥 Downloading $NAME..."
-            aria2c --console-log-level=warn -x 16 -s 16 -k 1M -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "$DOWNLOAD_URL"
+            # Direkte URL
+            aria2c --console-log-level=warn -x 16 -s 16 -k 1M -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "$SOURCE"
         fi
     fi
 done < "$LIST_FILE"
@@ -63,5 +66,5 @@ echo "🎉 STARTING FORGE"
 echo "==========================================================="
 
 cd "$BASE_PATH"
-# --skip-python-version-check ist wichtig für Ubuntu 24.04 (Python 3.12)
+# Startbefehl mit Python 3.12 Fix und Port 7860
 python3 launch.py --listen --port 7860 --enable-insecure-extension-access --theme dark --xformers --skip-python-version-check
