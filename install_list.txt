@@ -1,21 +1,19 @@
-# --- CHECKPOINTS ---
-# Juggernaut XL v11 / X
-1759168|Stable-diffusion|Juggernaut-XL-v9.safetensors
-2925778|Lora|real-vis-xl-enhancer.safetensors
+# --- Modelle (Stable Diffusion XL) ---
+https://civitai.com/api/download/models/357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
+https://civitai.com/api/download/models/239357 | Lora | real-vis-xl-enhancer.safetensors
+https://huggingface.co/stabilityai/svd_xt_1_1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
-# --- VIDEO ---
-https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors|svd|svd_xt_1_1.safetensors
+# --- Lora & Refiner ---
+https://civitai.com/api/download/models/135929 | Lora | detail_tweaker_xl.safetensors
+https://civitai.com/api/download/models/165767 | Lora | skin_detail_xl.safetensors
+https://civitai.com/api/download/models/145321 | Lora | film_grain_cinematic.safetensors
+https://civitai.com/api/download/models/211463 | Lora | perfect_eyes_xl.safetensors
 
-# --- LORAS ---
-135867|Lora|detail_tweaker_xl.safetensors
-340833|Lora|skin_detail_xl.safetensors
-133832|Lora|film_grain_cinematic.safetensors
-128461|Lora|perfect_eyes_xl.safetensors
+# --- Upscaler ---
+https://huggingface.co/uwu-kozak/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
+https://huggingface.co/Akumetsu971/SD_Tika_Mix/resolve/main/ESRGAN/Siax_200k.pth | ESRGAN | Siax_200k.pth
 
-# --- UPSCALER ---
-https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth|ESRGAN|4x-UltraSharp.pth
-# Siax via Civitai (Deine gefundene Version-ID)
-164677|ESRGAN|Siax_200k.pth
-
-# --- EXTENSIONS ---
-https://github.com/thomasasfk/sd-webui-aspect-ratio-helper|extensions|aspect-ratio-helper
+# --- Extensions (Bildanalyse & Tools) ---
+https://github.com/tarkov-gunsmith/stable-diffusion-webui-wd14-tagger | extensions | wd14-tagger
+https://github.com/ThomasS_L/stable-diffusion-webui-aspect-ratio-helper | extensions | aspect-ratio-helper
+https://github.com/Mikubill/sd-webui-controlnet | extensions | sd-webui-controlnet
