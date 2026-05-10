@@ -1,31 +1,31 @@
-# ======================================================================================
-# NOMENKLATUR DER INSTALLATIONS-LISTE
-# Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
-# ======================================================================================
+# =========================================================================================================
+# INSTALL LIST - SD-FORGE DEPLOYMENT (2026)
+# Format: SOURCE (URL oder Civitai-ID) | TARGET-FOLDER | FILENAME
+# =========================================================================================================
 
-# --- Checkpoint Modelle (SDXL) ---
+# --- CHECKPOINTS (Stable Diffusion XL) ---
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
 
-# --- Video Modelle (SVD) ---
+# --- VIDEO MODELS ---
 https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
-# --- LoRA (XL) ---
-https://civitai.red/api/download/models/2925778?type=Model&format=SafeTensor | Lora | real-vis-xl-enhancer.safetensors
-https://civitai.com/api/download/models/518040?type=Model&format=SafeTensor | Lora | film_grain_cinematic.safetensors
-https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lora | perfect_eyes_xl.safetensors
-135929 | Lora | detail_tweaker_xl.safetensors
-165767 | Lora | skin_detail_xl.safetensors
+# --- LORA & ADAPTER ---
+https://civitai.com/api/download/models/135010 | Lora | real-vis-xl-enhancer.safetensors
+https://civitai.com/api/download/models/152309 | Lora | film_grain_cinematic.safetensors
+https://civitai.com/api/download/models/152341 | Lora | perfect_eyes_xl.safetensors
+https://civitai.com/api/download/models/135867 | Lora | detail_tweaker_xl.safetensors
+https://civitai.com/api/download/models/144594 | Lora | skin_detail_xl.safetensors
 
-# --- Upscaler (ESRGAN) ---
-https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
-https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth | ESRGAN | Siax_200k.pth
+# --- UPSCALER (ESRGAN) ---
+https://huggingface.co/uwu/upscaler/resolve/main/ESRGAN/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
+https://huggingface.co/uwu/upscaler/resolve/main/ESRGAN/Siax_200k.pth | ESRGAN | Siax_200k.pth
 
-# --- Extensions (Verifizierte Links) ---
-# WD14-Tagger: Kataragi-Fork (Funktionierender Branch: master)
+# --- EXTENSIONS ---
+# WICHTIG: Kataragi ZIP-Forks für WD14 Kompatibilität
 https://github.com/Kataragi/stable-diffusion-webui-tagger-fork/archive/refs/heads/master.zip | extensions | wd14-tagger
-https://github.com/thomasasfk/sd-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
-https://github.com/Mikubill/sd-webui-controlnet/archive/refs/heads/main.zip | extensions | sd-webui-controlnet
+https://github.com/huchenlei/sd-webui-aspect-ratio-helper.git | extensions | aspect-ratio-helper
+https://github.com/Mikubill/sd-webui-controlnet.git | extensions | sd-webui-controlnet
 
-# --- WD14 Tagger Modell (Präventive Installation) ---
-# Das SwinV2 Modell aus deinem Screenshot für maximale Präzision
-https://huggingface.co/deepghs/wd14_tagger_with_embeddings/resolve/main/wd-v1-4-swinv2-tagger-v2.onnx | models/torch_deepdanbooru | wd-v1-4-swinv2-tagger-v2.onnx
+# --- WD14 TAGGER MODEL (SwinV2) ---
+# Verifizierter SmilingWolf Link (Direkt-Download ohne 404)
+https://huggingface.co/SmilingWolf/wd-v1-4-swinv2-tagger-v2/resolve/main/model.onnx | torch_deepdanbooru | wd-v1-4-swinv2-tagger-v2.onnx
