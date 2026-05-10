@@ -10,23 +10,22 @@
 # ======================================================================================
 
 # Format: URL/ID | Unterordner | Dateiname
-# ==============================================================================
 
- # --- Checkpoint Modelle (SDXL) ---
+# --- Checkpoint Modelle (SDXL) ---
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
 
 # --- Video Modelle (SVD) ---
-# HINWEIS: Erfordert manuelle Freischaltung unter: https://huggingface.co/stabilityai/svd_xt_1_1
+# WICHTIG: Lizenz auf HuggingFace Webseite akzeptieren!
 https://huggingface.co/stabilityai/svd_xt_1_1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
 # --- LoRA (XL) ---
-# Real-Vis XL Enhancer (via Proxy)
+# Real-Vis XL Enhancer
 https://civitai.red/api/download/models/2925778?type=Model&format=SafeTensor | Lora | real-vis-xl-enhancer.safetensors
 
 # Film Grain Cinematic
 https://civitai.com/api/download/models/518040?type=Model&format=SafeTensor | Lora | film_grain_cinematic.safetensors
 
-# Perfect Eyes XL (Korrigierte Version 128461)
+# Perfect Eyes XL (Fix: Nutzt & für weitere Parameter)
 https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lora | perfect_eyes_xl.safetensors
 
 # Standard LoRAs via ID
@@ -35,9 +34,10 @@ https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lo
 
 # --- Upscaler (ESRGAN) ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
-https://huggingface.co/Victorsss/Siax/resolve/main/Siax_200k.pth | ESRGAN | Siax_200k.pth
+https://huggingface.co/adityasuryadi/Siax_200k/resolve/main/Siax_200k.pth | ESRGAN | Siax_200k.pth
 
 # --- Extensions (Git Repositories) ---
 https://github.com/toshiaki1729/stable-diffusion-webui-wd14-tagger | extensions | wd14-tagger
 https://github.com/p1atdev/stable-diffusion-webui-aspect-ratio-helper | extensions | aspect-ratio-helper
 https://github.com/Mikubill/sd-webui-controlnet | extensions | sd-webui-controlnet
+
