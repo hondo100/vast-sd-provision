@@ -12,30 +12,32 @@
 # Format: URL/ID | Unterordner | Dateiname
 # ==============================================================================
 
- --- Checkpoint Modelle (SDXL) ---
+ # --- Checkpoint Modelle (SDXL) ---
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
 
 # --- Video Modelle (SVD) ---
-# Erfordert manuelle Zustimmung auf HuggingFace (stabilityai/svd_xt_1_1)
+# HINWEIS: Erfordert manuelle Freischaltung unter: https://huggingface.co/stabilityai/svd_xt_1_1
 https://huggingface.co/stabilityai/svd_xt_1_1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
 # --- LoRA (XL) ---
-# Real-Vis XL Enhancer (Direkt-URL via civitai.red Proxy für Stabilität)
+# Real-Vis XL Enhancer (via Proxy)
 https://civitai.red/api/download/models/2925778?type=Model&format=SafeTensor | Lora | real-vis-xl-enhancer.safetensors
 
-# Film Grain Cinematic (Direkt-URL zur Vermeidung von Versions-Konflikten)
+# Film Grain Cinematic
 https://civitai.com/api/download/models/518040?type=Model&format=SafeTensor | Lora | film_grain_cinematic.safetensors
 
-# Standard LoRAs via ID (Verifizierte Version-IDs)
+# Perfect Eyes XL (Korrigierte Version 128461)
+https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lora | perfect_eyes_xl.safetensors
+
+# Standard LoRAs via ID
 135929 | Lora | detail_tweaker_xl.safetensors
 165767 | Lora | skin_detail_xl.safetensors
-211463 | Lora | perfect_eyes_xl.safetensors
 
 # --- Upscaler (ESRGAN) ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
-https://huggingface.co/uwu-kozak/Siax_200k/resolve/main/Siax_200k.pth | ESRGAN | Siax_200k.pth
+https://huggingface.co/Victorsss/Siax/resolve/main/Siax_200k.pth | ESRGAN | Siax_200k.pth
 
 # --- Extensions (Git Repositories) ---
-https://github.com/toshiaki1729/stable-diffusion-webui-wd14-tagger.git | extensions | wd14-tagger
-https://github.com/p1atdev/stable-diffusion-webui-aspect-ratio-helper.git | extensions | aspect-ratio-helper
-https://github.com/Mikubill/sd-webui-controlnet.git | extensions | sd-webui-controlnet
+https://github.com/toshiaki1729/stable-diffusion-webui-wd14-tagger | extensions | wd14-tagger
+https://github.com/p1atdev/stable-diffusion-webui-aspect-ratio-helper | extensions | aspect-ratio-helper
+https://github.com/Mikubill/sd-webui-controlnet | extensions | sd-webui-controlnet
