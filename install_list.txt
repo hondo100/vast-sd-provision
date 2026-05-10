@@ -11,7 +11,7 @@ https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve
 # --- LORA & ADAPTER (Stabilisierte Links) ---
 518040 | Lora | film_grain_cinematic.safetensors
 135929 | Lora | detail_tweaker_xl.safetensors
-https://civitai.com/api/download/models/152341 | Lora | perfect_eyes_xl.safetensors
+https://civitai.com/api/download/models/128461 | Lora | perfect_eyes_xl.safetensors
 135010 | Lora | real-vis-xl-enhancer.safetensors
 https://civitai.com/api/download/models/144594 | Lora | skin_detail_xl.safetensors
 
