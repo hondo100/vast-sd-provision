@@ -1,5 +1,5 @@
 # =========================================================================================================
-# INSTALL LIST - SD-FORGE DEPLOYMENT (2026)
+# INSTALL LIST - SD-FORGE DEPLOYMENT (FINAL STABLE)
 # =========================================================================================================
 
 # --- CHECKPOINTS ---
@@ -8,22 +8,21 @@
 # --- VIDEO MODELS ---
 https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
-# --- LORA & ADAPTER (Nutze nur IDs für Civitai) ---
+# --- LORA & ADAPTER (Stabilisierte Links) ---
 518040 | Lora | film_grain_cinematic.safetensors
 135929 | Lora | detail_tweaker_xl.safetensors
-152341 | Lora | perfect_eyes_xl.safetensors
+https://civitai.com/api/download/models/152341 | Lora | perfect_eyes_xl.safetensors
 135010 | Lora | real-vis-xl-enhancer.safetensors
-144594 | Lora | skin_detail_xl.safetensors
+https://civitai.com/api/download/models/144594 | Lora | skin_detail_xl.safetensors
 
-# --- UPSCALER ---
+# --- UPSCALER (Manuell verifiziert) ---
 https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
-https://huggingface.co/PH_A_I/Siax/resolve/main/Siax_200k.pth | ESRGAN | Siax_200k.pth
+https://huggingface.co/Akumetsu971/SD_View_Models/resolve/main/Siax_200k.pth | ESRGAN | Siax_200k.pth
 
-# --- EXTENSIONS ---
+# --- EXTENSIONS (ZIP-Varianten für maximale Stabilität) ---
 https://github.com/Kataragi/stable-diffusion-webui-tagger-fork/archive/refs/heads/master.zip | extensions | wd14-tagger
-https://github.com/huchenlei/sd-webui-aspect-ratio-helper.git | extensions | aspect-ratio-helper
+https://github.com/huchenlei/sd-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
 https://github.com/Mikubill/sd-webui-controlnet.git | extensions | sd-webui-controlnet
 
 # --- WD14 TAGGER MODEL (SwinV2) ---
-# FIX: SmilingWolf Link ist der einzig stabile für Onnx-Direkt-Downloads
 https://huggingface.co/SmilingWolf/wd-v1-4-swinv2-tagger-v2/resolve/main/model.onnx | torch_deepdanbooru | wd-v1-4-swinv2-tagger-v2.onnx
