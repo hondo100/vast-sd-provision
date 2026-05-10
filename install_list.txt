@@ -3,6 +3,11 @@
 # Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
 # ======================================================================================
 
+# ======================================================================================
+# NOMENKLATUR DER INSTALLATIONS-LISTE
+# Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
+# ======================================================================================
+
 # --- Checkpoint Modelle (SDXL) ---
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
 
@@ -20,12 +25,12 @@ https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lo
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
 https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth | ESRGAN | Siax_200k.pth
 
-# --- Extensions (Verifizierte Community-Forks) ---
-# WD14-Tagger: Pfad auf 'main' korrigiert
-https://github.com/pythongosssss/stable-diffusion-webui-wd14-tagger/archive/refs/heads/main.zip | extensions | wd14-tagger
+# --- Extensions (Verifizierte, aktive Links) ---
+# WD14-Tagger: Aktueller Community-Fork (Branch: main)
+https://github.com/Linaqruf/stable-diffusion-webui-wd14-tagger/archive/refs/heads/main.zip | extensions | wd14-tagger
 
-# Aspect-Ratio-Helper: Nutzt ebenfalls 'main'
+# Aspect-Ratio-Helper: Aktueller Fork (Branch: main)
 https://github.com/thomasasfk/sd-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
 
-# ControlNet: Nutzt 'main'
+# ControlNet: Standard (Branch: main)
 https://github.com/Mikubill/sd-webui-controlnet/archive/refs/heads/main.zip | extensions | sd-webui-controlnet
