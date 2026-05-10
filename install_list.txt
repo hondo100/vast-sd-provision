@@ -15,20 +15,13 @@
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
 
 # --- Video Modelle (SVD) ---
-# WICHTIG: Lizenz auf HuggingFace Webseite akzeptieren!
+# WICHTIG: Lizenz auf HuggingFace akzeptieren!
 https://huggingface.co/stabilityai/svd_xt_1_1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
 # --- LoRA (XL) ---
-# Real-Vis XL Enhancer
 https://civitai.red/api/download/models/2925778?type=Model&format=SafeTensor | Lora | real-vis-xl-enhancer.safetensors
-
-# Film Grain Cinematic
 https://civitai.com/api/download/models/518040?type=Model&format=SafeTensor | Lora | film_grain_cinematic.safetensors
-
-# Perfect Eyes XL (Fix: Nutzt & für weitere Parameter)
 https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lora | perfect_eyes_xl.safetensors
-
-# Standard LoRAs via ID
 135929 | Lora | detail_tweaker_xl.safetensors
 165767 | Lora | skin_detail_xl.safetensors
 
@@ -40,4 +33,3 @@ https://huggingface.co/adityasuryadi/Siax_200k/resolve/main/Siax_200k.pth | ESRG
 https://github.com/toshiaki1729/stable-diffusion-webui-wd14-tagger | extensions | wd14-tagger
 https://github.com/p1atdev/stable-diffusion-webui-aspect-ratio-helper | extensions | aspect-ratio-helper
 https://github.com/Mikubill/sd-webui-controlnet | extensions | sd-webui-controlnet
-
