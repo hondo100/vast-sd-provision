@@ -21,7 +21,8 @@ https://civitai.com/api/download/models/2052724 | ESRGAN | Siax_200k.pth
 
 # --- EXTENSIONS (ZIP-Varianten für maximale Stabilität) ---
 https://github.com/Kataragi/stable-diffusion-webui-tagger-fork/archive/refs/heads/master.zip | extensions | wd14-tagger
-https://github.com/huchenlei/sd-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
+Aspect Ratio Helper (Verifiziert durch Screenshot: thomasasfk/main)
+https://github.com/thomasasfk/sd-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
 https://github.com/Mikubill/sd-webui-controlnet.git | extensions | sd-webui-controlnet
 
 # --- WD14 TAGGER MODEL (SwinV2) ---
