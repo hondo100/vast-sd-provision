@@ -1,49 +1,48 @@
 #!/bin/bash
 
 # ==============================================================================
-# VAST.AI PROVISIONING SCRIPT - ULTIMATE REBOOT-SAFE EDITION
+# VAST.AI PROVISIONING SCRIPT - FIXED PATHS & AUTH
 # ==============================================================================
 
 echo "--- 🚀 Starte finales Provisioning Script ---"
 
-# --- 1. Pfad-Vorbereitung & Keys ---
-# Robustere Erkennung: Falls /workspace (noch) nicht da ist, nutzen wir $HOME
+# --- 1. Pfad-Vorbereitung ---
+# Wir erzwingen /workspace, da Vast-Instanzen dort persistenten Speicher haben
 if [ -d "/workspace" ]; then
     BASE_DIR="/workspace"
 else
-    BASE_DIR="$HOME"
+    BASE_DIR="/root"
 fi
 cd "$BASE_DIR" || exit
 
-# Keys aus Umgebungsvariablen laden und von Leerzeichen befreien (wichtig für Civitai)
-export CIVITAI_API_KEY=$(echo "${CIVITAI_API_KEY:-$CIVITAI_KEY}" | xargs)
-export HF_TOKEN=$(echo "$HF_TOKEN" | xargs)
-export GITHUB_PAT=$(echo "$GITHUB_PAT" | xargs)
+# --- 2. Keys säubern ---
+# WICHTIG: API-Keys dürfen keine versteckten Zeichen enthalten
+export CIVITAI_API_KEY=$(echo "${CIVITAI_API_KEY:-$CIVITAI_KEY}" | tr -d '\r\n[:space:]')
+export HF_TOKEN=$(echo "$HF_TOKEN" | tr -d '\r\n[:space:]')
+export GITHUB_PAT=$(echo "$GITHUB_PAT" | tr -d '\r\n[:space:]')
 
-# --- 2. System-Vorbereitung ---
-apt-get update
-apt-get install -y aria2 git curl python3-pip python3-venv ca-certificates unzip --no-install-recommends
+# --- 3. System-Check ---
+apt-get update && apt-get install -y aria2 git curl unzip --no-install-recommends
 
-# --- 3. Forge Installation / Update ---
+# --- 4. Forge Installation ---
 if [ ! -d "stable-diffusion-webui-forge" ]; then
-    echo "--- Forge nicht gefunden, klone Repository ---"
+    echo "--- Klone Forge ---"
     git clone --depth 1 https://github.com/lllyasviel/stable-diffusion-webui-forge.git
 fi
 
-cd "stable-diffusion-webui-forge" || exit
-BASE_PATH=$(pwd)
-echo "--- Zielverzeichnis: $BASE_PATH ---"
+# Wir setzen den Pfad absolut, um '//launch.py' Fehler zu vermeiden
+cd "$BASE_DIR/stable-diffusion-webui-forge" || exit
+FORGE_ROOT=$(pwd)
+echo "--- Arbeitsverzeichnis: $FORGE_ROOT ---"
 
-# --- 4. Installationsliste laden (Private Repo Support) ---
+# --- 5. Installationsliste laden ---
 LIST_FILE="/tmp/install_list.txt"
 LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/install_list.txt"
 
-echo "--- Lade Installationsliste von GitHub ---"
-# Nutzt den GITHUB_PAT, falls die Liste im privaten Repo liegt
 curl -s -L -H "Authorization: token $GITHUB_PAT" "$LIST_URL?$(date +%s)" -o "$LIST_FILE"
 sed -i 's/\r$//' "$LIST_FILE" 
 
-# --- 5. Download-Schleife mit In-Line Filter & Error Handling ---
+# --- 6. Downloads ---
 echo "--- Starte Downloads ---"
 sed 's/#.*//' "$LIST_FILE" | sed '/^\s*$/d' | while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
     
@@ -51,74 +50,39 @@ sed 's/#.*//' "$LIST_FILE" | sed '/^\s*$/d' | while IFS='|' read -r SOURCE TYPE 
     TYPE=$(echo "$TYPE" | xargs)
     NAME=$(echo "$NAME" | xargs)
 
-    # --- SONDERFALL: EXTENSIONS ---
-    if [[ "$TYPE" == "extensions" ]]; then
-        TARGET_EXT_DIR="extensions/$NAME"
-        if [ ! -d "$TARGET_EXT_DIR" ]; then
-            echo "--- Installiere Extension: $NAME ---"
-            if [[ "$SOURCE" == *.zip ]]; then
-                mkdir -p "$TARGET_EXT_DIR"
-                curl -L -s -H "Authorization: token $GITHUB_PAT" "$SOURCE" -o "/tmp/temp.zip"
-                unzip -q -j "/tmp/temp.zip" -d "$TARGET_EXT_DIR" 
-                rm "/tmp/temp.zip"
-            else
-                git clone --depth 1 "$SOURCE" "$TARGET_EXT_DIR"
-            fi
-        fi
+    # Pfadbereinigung
+    CLEAN_TYPE=$(echo "$TYPE" | sed 's|^models/||')
+    DEST_DIR="$FORGE_ROOT/models/$CLEAN_TYPE"
+    [ "$TYPE" == "extensions" ] && DEST_DIR="$FORGE_ROOT/extensions/$NAME"
+    
+    mkdir -p "$DEST_DIR"
 
-    # --- NORMALFALL: MODELLE ---
-    else
-        CLEAN_TYPE=$(echo "$TYPE" | sed 's|^models/||')
-        DEST_DIR="models/$CLEAN_TYPE"
-        mkdir -p "$DEST_DIR"
-
-        if [ ! -f "$DEST_DIR/$NAME" ]; then
-            echo "--- Lade: $NAME nach $DEST_DIR ---"
-            
-            # A: Civitai (ID-basiert)
-            if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
-                aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                       --header="Authorization: Bearer $CIVITAI_API_KEY" \
-                       --check-certificate=false \
-                       -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
-                       "https://civitai.com/api/download/models/${SOURCE}"
-            
-            # B: HuggingFace (mit Auth)
-            elif [[ "$SOURCE" == *"huggingface.co"* ]]; then
-                aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                       --header="Authorization: Bearer $HF_TOKEN" \
-                       -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
-                       "$SOURCE"
-            
-            # C: Standard URL
-            else
-                aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                       -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
-                       "$SOURCE"
-            fi
+    if [ ! -f "$DEST_DIR/$NAME" ] || [ "$TYPE" == "extensions" ]; then
+        echo "--- Lade: $NAME ---"
+        
+        if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
+            # CIVITAI FIX: Wir nutzen den Key direkt im Header
+            aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
+                   --header="Authorization: Bearer $CIVITAI_API_KEY" \
+                   --check-certificate=false \
+                   -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
+                   "https://civitai.com/api/download/models/${SOURCE}"
+        
+        elif [[ "$SOURCE" == *"huggingface.co"* ]]; then
+            aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
+                   --header="Authorization: Bearer $HF_TOKEN" \
+                   -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
+                   "$SOURCE"
+        
+        elif [[ "$TYPE" == "extensions" ]]; then
+            [ ! -d "$DEST_DIR" ] && git clone --depth 1 "$SOURCE" "$DEST_DIR"
         else
-            echo "--- $NAME bereits vorhanden, überspringe ---"
+            aria2c --console-log-level=warn -x 16 -s 16 -k 1M -o "$NAME" -d "$DEST_DIR" "$SOURCE"
         fi
     fi
 done
 
-# --- 6. WD14 Tagger Fix (Optional) ---
-if [ -d "extensions/wd14-tagger" ]; then
-    echo "--- Installiere Tagger Requirements ---"
-    pip install --no-cache-dir onnxruntime-gpu opencv-python-headless
-fi
-
-# --- 7. Start von Forge ---
-echo "--- Provisioning beendet. Starte Forge ---"
-# --listen ist essenziell für Vast.ai Erreichbarkeit
-# Nutzt zusätzlich FORGE_ARGS aus dem Vast-Interface
-python3 launch.py \
-    --listen \
-    --port 7860 \
-    --enable-insecure-extension-access \
-    --xformers \
-    --pin-shared-memory \
-    --cuda-malloc-async \
-    --cuda-stream \
-    --skip-python-version-check \
-    $FORGE_ARGS
+# --- 7. Start ---
+echo "--- Starte Forge ---"
+cd "$FORGE_ROOT" || exit
+python3 launch.py --listen --port 7860 --enable-insecure-extension-access --xformers --skip-python-version-check $FORGE_ARGS
