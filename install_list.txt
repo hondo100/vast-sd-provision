@@ -1,13 +1,24 @@
+# ======================================================================================
+# NOMENKLATUR DER INSTALLATIONS-LISTE
+# Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
+# 
+# 1. DOWNLOAD_URL: Der direkte Link zur Datei (HuggingFace, GitHub, etc.)
+#    - Bei Civitai kann alternativ nur die Model-Version-ID genutzt werden.
+# 2. ZIEL-ORDNER: Der Unterordner innerhalb von 'models/' (z.B. Lora, Stable-diffusion).
+#    - Sonderfall 'extensions': Installiert ein Git-Repository in den Extensions-Ordner.
+# 3. DATEINAME: Wie die Datei lokal gespeichert werden soll (inkl. Endung wie .safetensors).
+# ======================================================================================
+
 # --- Modelle (Stable Diffusion XL) ---
-https://civitai.com/api/download/models/357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
-https://civitai.com/api/download/models/239357 | Lora | real-vis-xl-enhancer.safetensors
+357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
+239357 | Lora | real-vis-xl-enhancer.safetensors
 https://huggingface.co/stabilityai/svd_xt_1_1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
 # --- Lora & Refiner ---
-https://civitai.com/api/download/models/135929 | Lora | detail_tweaker_xl.safetensors
-https://civitai.com/api/download/models/165767 | Lora | skin_detail_xl.safetensors
-https://civitai.com/api/download/models/145321 | Lora | film_grain_cinematic.safetensors
-https://civitai.com/api/download/models/211463 | Lora | perfect_eyes_xl.safetensors
+135929 | Lora | detail_tweaker_xl.safetensors
+165767 | Lora | skin_detail_xl.safetensors
+145321 | Lora | film_grain_cinematic.safetensors
+211463 | Lora | perfect_eyes_xl.safetensors
 
 # --- Upscaler ---
 https://huggingface.co/uwu-kozak/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
