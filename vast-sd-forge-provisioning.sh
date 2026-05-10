@@ -60,7 +60,7 @@ sed 's/#.*//' "$LIST_FILE" | sed '/^\s*$/d' | while IFS='|' read -r SOURCE TYPE 
     if [ ! -f "$DEST_DIR/$NAME" ] || [ "$TYPE" == "extensions" ]; then
         echo "--- Lade: $NAME ---"
         
-        iif [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
+        if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
             echo "--- Lade Civitai ID: $SOURCE via curl ---"
             curl -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0" \
                  "https://civitai.com/api/download/models/${SOURCE}?token=$CIVITAI_API_KEY" \
