@@ -60,13 +60,11 @@ sed 's/#.*//' "$LIST_FILE" | sed '/^\s*$/d' | while IFS='|' read -r SOURCE TYPE 
     if [ ! -f "$DEST_DIR/$NAME" ] || [ "$TYPE" == "extensions" ]; then
         echo "--- Lade: $NAME ---"
         
-        if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
-            # CIVITAI FIX: Wir nutzen den Key direkt im Header
-            aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                   --header="Authorization: Bearer $CIVITAI_API_KEY" \
-                   --check-certificate=false \
-                   -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
-                   "https://civitai.com/api/download/models/${SOURCE}"
+        iif [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
+            echo "--- Lade Civitai ID: $SOURCE via curl ---"
+            curl -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0" \
+                 "https://civitai.com/api/download/models/${SOURCE}?token=$CIVITAI_API_KEY" \
+                 --output "$DEST_DIR/$NAME"
         
         elif [[ "$SOURCE" == *"huggingface.co"* ]]; then
             aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
