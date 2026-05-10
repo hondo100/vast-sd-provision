@@ -1,18 +1,17 @@
 #!/bin/bash
 
 # ==============================================================================
-# VAST.AI PROVISIONING SCRIPT FOR SD-FORGE
+# VAST.AI PROVISIONING SCRIPT FOR SD-FORGE (OPTIMIZED FOR WD14 & ZIP)
 # ==============================================================================
 
-echo "--- 🚀 Starte Provisioning Script ---"
+echo "--- 🚀 Starte optimiertes Provisioning Script ---"
 
 # 1. System-Vorbereitung
-# Wir installieren notwendige Tools und stellen sicher, dass Zertifikate aktuell sind
+# unzip wird zusätzlich benötigt für die neuen WD14-Links
 apt-get update
-apt-get install -y aria2 git curl python3-pip python3-venv ca-certificates
+apt-get install -y aria2 git curl python3-pip python3-venv ca-certificates unzip
 
-# 2. Dynamische Pfad-Erkennung (Der Pfad-Finder)
-# Forge liegt je nach Template an unterschiedlichen Stellen
+# 2. Dynamische Pfad-Erkennung
 if [ -f "/workspace/launch.py" ]; then
     BASE_PATH="/workspace"
 elif [ -d "/workspace/stable-diffusion-webui-forge" ]; then
@@ -34,68 +33,89 @@ LIST_FILE="/tmp/install_list.txt"
 LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/install_list.txt"
 
 echo "--- Lade Installationsliste ---"
-curl -s -L -H "Authorization: token $GITHUB_PAT" "$LIST_URL" -o "$LIST_FILE"
+curl -s -L -H "Authorization: token $GITHUB_PAT" "$LIST_URL?$(date +%s)" -o "$LIST_FILE"
 
-# WICHTIG: CRLF-Bereinigung (entfernt Windows-Zeilenumbrüche)
+# CRLF-Bereinigung (Wichtig für Windows-Editoren)
 sed -i 's/\r$//' "$LIST_FILE"
 
 # 4. Download-Schleife
 echo "--- Starte Downloads ---"
 while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
-    # Kommentare und Leerzeilen ignorieren
-    [[ "$SOURCE" =~ ^#.*$ ]] && continue
-    [[ -z "$SOURCE" ]] && continue
+    [[ "$SOURCE" =~ ^#.*$ || -z "$SOURCE" ]] && continue
     
-    # Leerzeichen entfernen
+    # Trim Whitespaces
     SOURCE=$(echo "$SOURCE" | xargs)
     TYPE=$(echo "$TYPE" | xargs)
     NAME=$(echo "$NAME" | xargs)
 
-    # Sonderfall: Extensions (Git Repos)
+    # --- SONDERFALL: EXTENSIONS ---
     if [[ "$TYPE" == "extensions" ]]; then
-        echo "--- Installiere Extension: $NAME ---"
         TARGET_EXT_DIR="extensions/$NAME"
         if [ ! -d "$TARGET_EXT_DIR" ]; then
-            git clone "$SOURCE" "$TARGET_EXT_DIR"
+            echo "--- Installiere Extension: $NAME ---"
+            
+            # ZIP-Handling (für Kataragi/WD14 Forks)
+            if [[ "$SOURCE" == *.zip ]]; then
+                mkdir -p "$TARGET_EXT_DIR"
+                curl -L -s -H "Authorization: token $GITHUB_PAT" "$SOURCE" -o "/tmp/temp.zip"
+                mkdir -p "/tmp/extract_$NAME"
+                unzip -q "/tmp/temp.zip" -d "/tmp/extract_$NAME"
+                # Inhalt der ersten Unterebene verschieben
+                cp -r /tmp/extract_$NAME/*/. "$TARGET_EXT_DIR/"
+                rm -rf "/tmp/temp.zip" "/tmp/extract_$NAME"
+            else
+                # Klassisches Git Clone
+                git clone "$SOURCE" "$TARGET_EXT_DIR"
+            fi
         else
-            echo "--- $NAME bereits vorhanden, überspringe ---"
+            echo "--- Extension $NAME bereits vorhanden ---"
         fi
-    
-    # Normalfall: Modelle / Loras / VAE / Upscaler
+
+    # --- NORMALFALL: MODELLE / LORAS / TORCH_DEEPDANBOORU ---
     else
-        echo "--- Lade Modell: $NAME ---"
-        mkdir -p "models/$TYPE"
-        
-        # Browser-Tarnung und Token-Logik (aria2c)
-        if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
+        # Pfad-Korrektur: Verhindert doppelte 'models/' Präfixe
+        CLEAN_TYPE=$(echo "$TYPE" | sed 's|^models/||')
+        mkdir -p "models/$CLEAN_TYPE"
+        DEST_DIR="models/$CLEAN_TYPE"
+
+        if [ ! -f "$DEST_DIR/$NAME" ]; then
+            echo "--- Lade Modell: $NAME nach $DEST_DIR ---"
+            
             # Civitai ID
-            aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                   --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                   --header="Referer: https://civitai.com/" \
-                   -o "$NAME" -d "models/$TYPE" --allow-overwrite=true \
-                   "https://civitai.com/api/download/models/${SOURCE}?token=${CIVITAI_KEY}"
-        
-        elif [[ "$SOURCE" == *"huggingface.co"* ]]; then
-            # HuggingFace (Resolve-Fix ist in der install_list.txt URL nötig)
-            aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                   --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                   --header="Authorization: Bearer $HF_TOKEN" \
-                   -o "$NAME" -d "models/$TYPE" --allow-overwrite=true \
-                   "$SOURCE"
-        
+            if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
+                aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
+                       --user-agent="Mozilla/5.0" \
+                       --header="Referer: https://civitai.com/" \
+                       -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
+                       "https://civitai.com/api/download/models/${SOURCE}?token=${CIVITAI_KEY}"
+            
+            # HuggingFace mit Bearer Token
+            elif [[ "$SOURCE" == *"huggingface.co"* ]]; then
+                aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
+                       --header="Authorization: Bearer $HF_TOKEN" \
+                       -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
+                       "$SOURCE"
+            
+            # Direkte URL
+            else
+                aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
+                       -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
+                       "$SOURCE"
+            fi
         else
-            # Sonstige Direkte Links
-            aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                   --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                   -o "$NAME" -d "models/$TYPE" --allow-overwrite=true \
-                   "$SOURCE"
+            echo "--- $NAME bereits vorhanden ---"
         fi
     fi
 done < "$LIST_FILE"
 
-# 5. Abschluss und Start von Forge
+# 5. WD14 Tagger Requirements (Optional aber empfohlen)
+if [ -f "extensions/wd14-tagger/requirements.txt" ]; then
+    echo "--- Installiere Tagger Requirements ---"
+    pip install -r extensions/wd14-tagger/requirements.txt --quiet
+fi
+
 echo "--- Provisioning beendet. Starte Forge ---"
 
-# Fix für Python 3.12 und Optimierungen für Vast.ai (Cuda Malloc / Stream)
+# Startbefehl für Vast.ai
 python3 launch.py --listen --port 7860 --xformers --pin-shared-memory \
                   --cuda-malloc-async --cuda-stream --skip-python-version-check
