@@ -1,28 +1,13 @@
 # ======================================================================================
 # NOMENKLATUR DER INSTALLATIONS-LISTE
 # Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
-# 
-# 1. DOWNLOAD_URL: Der direkte Link zur Datei (HuggingFace, GitHub, etc.)
-#    - Bei Civitai kann alternativ nur die Model-Version-ID genutzt werden.
-# 2. ZIEL-ORDNER: Der Unterordner innerhalb von 'models/' (z.B. Lora, Stable-diffusion).
-#    - Sonderfall 'extensions': Installiert ein Git-Repository in den Extensions-Ordner.
-# 3. DATEINAME: Wie die Datei lokal gespeichert werden soll (inkl. Endung wie .safetensors).
-# ======================================================================================
-
-# ======================================================================================
-# NOMENKLATUR DER INSTALLATIONS-LISTE
-# Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
-# ======================================================================================
-
-# ======================================================================================
-# NOMENKLATUR DER INSTALLATIONS-LISTE
-# Format: [DOWNLOAD_URL oder CIVITAI_ID] | [ZIEL-ORDNER] | [DATEINAME]
 # ======================================================================================
 
 # --- Checkpoint Modelle (SDXL) ---
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
 
 # --- Video Modelle (SVD) ---
+# Erfordert HF_TOKEN im Skript/Vast.ai Environment
 https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
 # --- LoRA (XL) ---
@@ -36,10 +21,12 @@ https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lo
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
 https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth | ESRGAN | Siax_200k.pth
 
-# --- Extensions (Branch-spezifische Korrektur) ---
-# wd14-tagger nutzt weiterhin 'master'
-https://github.com/toshiaki1729/stable-diffusion-webui-wd14-tagger/archive/refs/heads/master.zip | extensions | wd14-tagger
-# aspect-ratio-helper nutzt 'main'
-https://github.com/p1atdev/stable-diffusion-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
-# controlnet nutzt 'main'
+# --- Extensions (Verifizierte und aktive Community-Forks) ---
+# WD14-Tagger: Wechsel zu pythongosssss (derzeitiger Standard)
+https://github.com/pythongosssss/stable-diffusion-webui-wd14-tagger/archive/refs/heads/master.zip | extensions | wd14-tagger
+
+# Aspect-Ratio-Helper: Wechsel zu thomasasfk (aktiver Fork)
+https://github.com/thomasasfk/sd-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
+
+# ControlNet: Standard-Repository (Zweig: main)
 https://github.com/Mikubill/sd-webui-controlnet/archive/refs/heads/main.zip | extensions | sd-webui-controlnet
