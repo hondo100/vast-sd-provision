@@ -4,10 +4,11 @@ echo "==========================================================="
 echo "🚀 VAST.AI PROVISIONING: STARTING"
 echo "==========================================================="
 
-# 1. System-Tools (Aria2 Paketname ist 'aria2')
-apt-get update && apt-get install -y aria2 git curl
+# 1. System-Tools sicherstellen
+echo "--- Checking System Tools ---"
+apt-get update && apt-get install -y aria2 git curl python3-pip python3-venv
 
-# 2. Forge-Pfad Suche (Optimiert für "SD Forge UI" Templates)
+# 2. Forge-Pfad Suche (Optimiert für Vast.ai Templates)
 if [ -f "/workspace/launch.py" ]; then
     BASE_PATH="/workspace"
     echo "✅ Forge found directly in /workspace"
@@ -30,10 +31,11 @@ EXTENSIONS_DIR="$BASE_PATH/extensions"
 LIST_FILE="/tmp/install_list.txt"
 
 # 3. install_list.txt laden
+echo "--- Fetching install_list.txt ---"
 LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/install_list.txt"
 curl -s -L -H "Authorization: token $GITHUB_PAT" "$LIST_URL" -o "$LIST_FILE"
 
-# 4. Downloads mit Aria2 (Robuste Version)
+# 4. Downloads mit Aria2 (Optimierte Logik)
 while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
     [[ "$SOURCE" =~ ^#.*$ ]] && continue
     [[ -z "$SOURCE" ]] && continue
@@ -49,22 +51,34 @@ while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
         
         echo "📥 Downloading $NAME..."
         if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
-            # Civitai
+            # Civitai Download
             aria2c --console-log-level=warn -x 16 -s 16 -k 1M -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "https://civitai.com/api/download/models/${SOURCE}?token=${CIVITAI_KEY}"
         elif [[ "$SOURCE" == *"huggingface.co"* ]]; then
-            # HuggingFace mit Token
+            # HuggingFace Download mit Token
             aria2c --console-log-level=warn -x 16 -s 16 -k 1M --header="Authorization: Bearer $HF_TOKEN" -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "$SOURCE"
         else
-            # Direkte URL
+            # Direkter Link
             aria2c --console-log-level=warn -x 16 -s 16 -k 1M -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true "$SOURCE"
         fi
     fi
 done < "$LIST_FILE"
 
 echo "==========================================================="
-echo "🎉 STARTING FORGE"
+echo "🎉 PROVISIONING COMPLETE - STARTING FORGE"
 echo "==========================================================="
 
+# Zurück in den Hauptordner
 cd "$BASE_PATH"
-# Startbefehl mit Python 3.12 Fix und Port 7860
-python3 launch.py --listen --port 7860 --enable-insecure-extension-access --theme dark --xformers --skip-python-version-check
+
+# Startbefehl mit GPU-Optimierungen und Python 3.12 Fix
+# Port 7860 ist Standard für Stable Diffusion
+python3 launch.py \
+    --listen \
+    --port 7860 \
+    --enable-insecure-extension-access \
+    --theme dark \
+    --xformers \
+    --pin-shared-memory \
+    --cuda-malloc-async \
+    --cuda-stream \
+    --skip-python-version-check
