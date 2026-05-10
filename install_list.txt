@@ -26,9 +26,9 @@ https://civitai.com/api/download/models/128461?type=Model&format=SafeTensor | Lo
 
 # --- Upscaler (ESRGAN) ---
 https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
-https://huggingface.co/adityasuryadi/Siax_200k/resolve/main/model/Siax_200k.pth | ESRGAN | Siax_200k.pth
+https://huggingface.co/gemasai/4x_NMKD-Siax_200k/resolve/main/4x_NMKD-Siax_200k.pth | ESRGAN | Siax_200k.pth
 
-# --- Extensions (Branch-Fix) ---
+# --- Extensions (Verifizierte 'main' Branches) ---
 https://github.com/toshiaki1729/stable-diffusion-webui-wd14-tagger/archive/refs/heads/main.zip | extensions | wd14-tagger
 https://github.com/p1atdev/stable-diffusion-webui-aspect-ratio-helper/archive/refs/heads/main.zip | extensions | aspect-ratio-helper
 https://github.com/Mikubill/sd-webui-controlnet/archive/refs/heads/main.zip | extensions | sd-webui-controlnet
