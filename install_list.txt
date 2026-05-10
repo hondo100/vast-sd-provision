@@ -15,7 +15,7 @@
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
 
 # --- Video Modelle (SVD) ---
-# HINWEIS: Erst auf HF Webseite freischalten!
+# HINWEIS: Erfordert manuelle Freischaltung auf HuggingFace (stabilityai/svd_xt_1_1)
 https://huggingface.co/stabilityai/svd_xt_1_1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
 # --- LoRA (XL) ---
