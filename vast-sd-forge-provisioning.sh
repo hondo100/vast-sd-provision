@@ -36,88 +36,66 @@ echo "--- Lade Installationsliste von GitHub ---"
 curl -s -L -H "Authorization: token $GITHUB_PAT" "$LIST_URL?$(date +%s)" -o "$LIST_FILE"
 sed -i 's/\r$//' "$LIST_FILE" # Entfernt Windows-Zeilenumbrüche
 
-# 4. Download-Schleife
+# 4. Download-Schleife mit In-Line Kommentar-Filter
 echo "--- Starte Downloads ---"
-while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
-    [[ "$SOURCE" =~ ^#.*$ || -z "$SOURCE" ]] && continue
-    
+# sed entfernt alles ab # und löscht leere Zeilen
+sed 's/#.*//' "$LIST_FILE" | sed '/^\s*$/d' | while IFS='|' read -r SOURCE TYPE NAME || [ -n "$SOURCE" ]; do
     SOURCE=$(echo "$SOURCE" | xargs)
     TYPE=$(echo "$TYPE" | xargs)
     NAME=$(echo "$NAME" | xargs)
 
-    # --- SONDERFALL: EXTENSIONS (ZIP oder Git) ---
+    # --- SONDERFALL: EXTENSIONS ---
     if [[ "$TYPE" == "extensions" ]]; then
         TARGET_EXT_DIR="extensions/$NAME"
         if [ ! -d "$TARGET_EXT_DIR" ]; then
             echo "--- Installiere Extension: $NAME ---"
             if [[ "$SOURCE" == *.zip ]]; then
-                # ZIP-Download Logik (für Kataragi/WD14)
                 mkdir -p "$TARGET_EXT_DIR"
-                curl -L -s -H "Authorization: token $GITHUB_PAT" "$SOURCE" -o "/tmp/temp.zip"
-                mkdir -p "/tmp/extract_$NAME"
-                unzip -q "/tmp/temp.zip" -d "/tmp/extract_$NAME"
-                cp -r /tmp/extract_$NAME/*/. "$TARGET_EXT_DIR/"
-                rm -rf "/tmp/temp.zip" "/tmp/extract_$NAME"
+                curl -L -H "Authorization: token $GITHUB_PAT" "$SOURCE" -o "/tmp/temp.zip"
+                unzip -q -j "/tmp/temp.zip" -d "$TARGET_EXT_DIR" # -j flacht die Struktur ab
+                rm "/tmp/temp.zip"
             else
                 git clone --depth 1 "$SOURCE" "$TARGET_EXT_DIR"
             fi
-        else
-            echo "--- Extension $NAME bereits vorhanden ---"
         fi
 
-    # --- NORMALFALL: MODELLE / LORAS / TORCH_DEEPDANBOORU ---
+    # --- NORMALFALL: MODELLE ---
     else
-        # Pfad-Bereinigung (entfernt 'models/' falls es in der Liste steht)
         CLEAN_TYPE=$(echo "$TYPE" | sed 's|^models/||')
         DEST_DIR="models/$CLEAN_TYPE"
         mkdir -p "$DEST_DIR"
 
         if [ ! -f "$DEST_DIR/$NAME" ]; then
-            echo "--- Lade Modell: $NAME nach $DEST_DIR ---"
+            echo "--- Lade Modell: $NAME ---"
             
-            # Civitai mit Token
             if [[ "$SOURCE" =~ ^[0-9]+$ ]]; then
+                # Civitai Profi-Download
                 aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                       --user-agent="Mozilla/5.0" \
-                       --header="Referer: https://civitai.com/" \
-                       -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
-                       "https://civitai.com/api/download/models/${SOURCE}?token=${CIVITAI_KEY}"
+                       --header="Authorization: Bearer $CIVITAI_API_KEY" \
+                       -o "$NAME" -d "$DEST_DIR" \
+                       "https://civitai.com/api/download/models/${SOURCE}"
             
-            # HuggingFace mit Bearer Token (SmilingWolf URL)
             elif [[ "$SOURCE" == *"huggingface.co"* ]]; then
                 aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                       --user-agent="Mozilla/5.0" \
                        --header="Authorization: Bearer $HF_TOKEN" \
-                       -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
-                       "$SOURCE"
-            
-            # Standard URL
+                       -o "$NAME" -d "$DEST_DIR" "$SOURCE"
             else
-                aria2c --console-log-level=warn -x 16 -s 16 -k 1M \
-                       --user-agent="Mozilla/5.0" \
-                       -o "$NAME" -d "$DEST_DIR" --allow-overwrite=true \
-                       "$SOURCE"
+                aria2c --console-log-level=warn -x 16 -s 16 -k 1M -o "$NAME" -d "$DEST_DIR" "$SOURCE"
             fi
-        else
-            echo "--- $NAME bereits vorhanden ---"
         fi
     fi
-done < "$LIST_FILE"
+done
 
-# 5. Abhängigkeiten für WD14 Tagger installieren
+# 5. WD14 Tagger Fix
 if [ -d "extensions/wd14-tagger" ]; then
     echo "--- Installiere Tagger Requirements ---"
-    pip install -r extensions/wd14-tagger/requirements.txt --quiet --no-cache-dir
+    pip install --no-cache-dir onnxruntime-gpu opencv-python-headless
 fi
 
-# 6. Start von Forge
+# 6. Start (mit dem wichtigen Flag für Vast.ai)
 echo "--- Provisioning beendet. Starte Forge ---"
 python3 launch.py \
-    --listen \
-    --port 7860 \
+    --listen --port 7860 \
     --enable-insecure-extension-access \
-    --xformers \
-    --pin-shared-memory \
-    --cuda-malloc-async \
-    --cuda-stream \
+    --xformers --pin-shared-memory --cuda-malloc-async --cuda-stream \
     --skip-python-version-check
