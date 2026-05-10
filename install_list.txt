@@ -9,22 +9,27 @@
 # 3. DATEINAME: Wie die Datei lokal gespeichert werden soll (inkl. Endung wie .safetensors).
 # ======================================================================================
 
-# --- Modelle (Stable Diffusion XL) ---
+# Format: URL/ID | Unterordner | Dateiname
+# ==============================================================================
+
+# --- Checkpoint Modelle (Stable Diffusion XL) ---
 357609 | Stable-diffusion | Juggernaut-XL-v9.safetensors
-239357 | Lora | real-vis-xl-enhancer.safetensors
+239357 | Stable-diffusion | real-vis-xl-enhancer.safetensors
+
+# --- Video Modelle (SVD) ---
 https://huggingface.co/stabilityai/svd_xt_1_1/resolve/main/svd_xt_1_1.safetensors | svd | svd_xt_1_1.safetensors
 
-# --- Lora & Refiner ---
+# --- LoRA (XL) ---
 135929 | Lora | detail_tweaker_xl.safetensors
 165767 | Lora | skin_detail_xl.safetensors
 145321 | Lora | film_grain_cinematic.safetensors
 211463 | Lora | perfect_eyes_xl.safetensors
 
-# --- Upscaler ---
-https://huggingface.co/uwu-kozak/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
+# --- Upscaler (ESRGAN) ---
+https://huggingface.co/lokCX/4x-UltraSharp/resolve/main/4x-UltraSharp.pth | ESRGAN | 4x-UltraSharp.pth
 https://huggingface.co/Akumetsu971/SD_Tika_Mix/resolve/main/ESRGAN/Siax_200k.pth | ESRGAN | Siax_200k.pth
 
-# --- Extensions (Bildanalyse & Tools) ---
-https://github.com/tarkov-gunsmith/stable-diffusion-webui-wd14-tagger | extensions | wd14-tagger
-https://github.com/ThomasS_L/stable-diffusion-webui-aspect-ratio-helper | extensions | aspect-ratio-helper
-https://github.com/Mikubill/sd-webui-controlnet | extensions | sd-webui-controlnet
+# --- Extensions (Git Repositories) ---
+https://github.com/toshiaki1729/stable-diffusion-webui-wd14-tagger.git | extensions | wd14-tagger
+https://github.com/p1atdev/stable-diffusion-webui-aspect-ratio-helper.git | extensions | aspect-ratio-helper
+https://github.com/Mikubill/sd-webui-controlnet.git | extensions | sd-webui-controlnet
