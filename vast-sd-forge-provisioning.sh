@@ -46,12 +46,18 @@ section "WORKSPACE SETUP"
 FORGE_ROOT="${WORKSPACE}/stable-diffusion-webui-forge"
 log "Forge Root:  $FORGE_ROOT"
 
-step "Prüfe Workspace-Verzeichnis..."
-if [ ! -d "${WORKSPACE}" ]; then
-    fail "WORKSPACE-Verzeichnis existiert nicht: ${WORKSPACE}"
-    exit 1
-fi
-ok "Workspace vorhanden: ${WORKSPACE}"
+step "Warte auf Workspace-Verzeichnis..."
+WAIT=0
+until [ -d "${WORKSPACE}" ]; do
+    log "  /workspace noch nicht verfügbar – warte... (${WAIT}s)"
+    sleep 5
+    WAIT=$((WAIT + 5))
+    if [ $WAIT -ge 120 ]; then
+        fail "WORKSPACE nach 120s immer noch nicht verfügbar: ${WORKSPACE}"
+        exit 1
+    fi
+done
+ok "Workspace verfügbar: ${WORKSPACE}"
 
 debug "Workspace-Inhalt:"
 ls -la "${WORKSPACE}" | while read line; do debug "  $line"; done
