@@ -28,7 +28,9 @@ if [ -f "$SENTINEL" ]; then
     log "   Überspringe Installation – starte Forge direkt."
     log "   (Sentinel löschen mit: rm $SENTINEL)"
     cd "$WORKSPACE"
-    # FIX: -f Flag für Root-Check
+    # FIX: ERR-Trap deaktivieren damit Restart-Loop funktioniert
+    set +e
+    trap - ERR
     while true; do
         bash webui.sh -f
         warn "Forge beendet (Exit-Code: $?) – Neustart in 10 Sekunden..."
@@ -128,7 +130,8 @@ else
     GPU_NAME="unbekannt"
 fi
 
-BASE_ARGS="${FORGE_ARGS:---listen --port 7860 --theme dark --no-download-sd-model --xformers}"
+# FIX: --api --cuda-malloc --pin-shared-memory in BASE_ARGS ergänzt
+BASE_ARGS="${FORGE_ARGS:---listen --port 7860 --theme dark --no-download-sd-model --xformers --api --cuda-malloc --pin-shared-memory}"
 RESOLVED_FORGE_ARGS="${BASE_ARGS} ${AUTO_VRAM_ARGS}"
 
 cat > "$WORKSPACE/webui-user.sh" << WEBUI_CFG
@@ -249,7 +252,10 @@ cd "$WORKSPACE"
 "$WORKSPACE/venv/bin/python" -m pip install "pip<25" setuptools wheel joblib \
     --quiet 2>/dev/null || true
 
-# FIX: -f Flag für Root-Check, nur ein Restart-Loop
+# FIX: ERR-Trap deaktivieren damit Restart-Loop bei Forge-Crash weitermacht
+set +e
+trap - ERR
+
 while true; do
     bash webui.sh -f
     EXIT_CODE=$?
