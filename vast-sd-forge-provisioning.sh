@@ -246,6 +246,14 @@ echo "Abgeschlossen am $(date '+%Y-%m-%d %H:%M:%S')" > "$SENTINEL"
 ok "Sentinel gesetzt: $SENTINEL"
 
 # ── 9. FORGE STARTEN (Restart-Loop) ──────────────────────────
+echo "[$(date +%T)] Schritt 9/9: Starte Forge..."
+
+# pip auf kompatiblem Stand halten (pip 26+ bricht CLIP-Build)
+"$WORKSPACE/venv/bin/python" -m pip install "pip<25" setuptools wheel \
+    --quiet 2>/dev/null || true
+
+bash webui.sh -f
+
 log "Schritt 9/9: Starte Forge..."
 log "   GPU:        ${GPU_NAME:-unbekannt} (${VRAM_GB:-?}GB VRAM)"
 log "   Python:     $(python3.11 --version)"
