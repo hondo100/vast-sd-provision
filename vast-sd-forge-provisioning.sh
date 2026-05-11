@@ -12,14 +12,12 @@ ok()   { echo "[$(date '+%H:%M:%S')] ✅ $*"; }
 warn() { echo "[$(date '+%H:%M:%S')] ⚠️  $*"; }
 fail() { echo "[$(date '+%H:%M:%S')] ❌ FEHLER: $*" >&2; }
 
-# Trap: Bei unerwartetem Abbruch genaue Zeile ausgeben
 trap 'fail "Script abgebrochen in Zeile $LINENO (Exit-Code: $?). Letzter Befehl: $BASH_COMMAND"' ERR
 
 WORKSPACE="/root/stable-diffusion-webui-forge"
 LOG_FILE="/root/provisioning.log"
 SENTINEL="/root/.provisioning_done"
 
-# ── Fix 5: Alle Ausgaben auch in Log-Datei schreiben ─────────────────────────
 exec > >(tee -a "$LOG_FILE") 2>&1
 log "Log wird geschrieben nach: $LOG_FILE"
 log "--- 🚀 Starte SD-Forge Provisioning Script ---"
@@ -30,8 +28,9 @@ if [ -f "$SENTINEL" ]; then
     log "   Überspringe Installation – starte Forge direkt."
     log "   (Sentinel löschen mit: rm $SENTINEL)"
     cd "$WORKSPACE"
+    # FIX: -f Flag für Root-Check
     while true; do
-        bash webui.sh
+        bash webui.sh -f
         warn "Forge beendet (Exit-Code: $?) – Neustart in 10 Sekunden..."
         sleep 10
     done
@@ -40,7 +39,6 @@ fi
 
 # ── 1. MODELL-LISTE VON GITHUB LADEN ─────────────────────────────────────────
 log "Schritt 1/9: Lade Modell-Konfiguration von GitHub..."
-# shellcheck source=/dev/null
 if ! source <(curl -fsSL \
   -H "Authorization: token ${GITHUB_PAT}" \
   "https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/model-list.sh?$(date +%s)"); then
@@ -49,7 +47,7 @@ if ! source <(curl -fsSL \
 fi
 ok "model-list.sh geladen (${#DOWNLOADS[@]} Modelle, ${#EXTENSIONS[@]} Extensions)"
 
-# ── Fix 2: Disk-Space-Check ───────────────────────────────────────────────────
+# ── 2. DISK-SPACE-CHECK ───────────────────────────────────────────────────────
 log "Schritt 2/9: Disk-Space prüfen..."
 REQUIRED_GB=15
 AVAILABLE_GB=$(df -BG /root | awk 'NR==2 {print $4}' | tr -d 'G')
@@ -68,7 +66,7 @@ apt-get install -y -qq \
     software-properties-common \
     aria2 git curl unzip \
     build-essential ninja-build \
-    libgl1 libglib2.0-0 || { fail "apt-get install fehlgeschlagen – Netzwerk oder Mirror-Problem?"; exit 1; }
+    libgl1 libglib2.0-0 || { fail "apt-get install fehlgeschlagen"; exit 1; }
 ok "System-Tools installiert"
 
 # ── 4. PYTHON 3.11 VIA DEADSNAKES PPA ────────────────────────────────────────
@@ -82,9 +80,7 @@ apt-get install -y python3.11 python3.11-venv python3.11-dev python3.11-distutil
 ok "Python 3.11 installiert: $(python3.11 --version)"
 
 log "Schritt 4/9 (pip): pip für Python 3.11 einrichten..."
-# ensurepip ist Debian-sicher – umgeht den RECORD-Datei-Konflikt mit apt-installierten Paketen
 python3.11 -m ensurepip --upgrade || { fail "ensurepip fehlgeschlagen"; exit 1; }
-# --ignore-installed überspringt apt-verwaltete Pakete ohne RECORD-Datei
 python3.11 -m pip install --upgrade pip --ignore-installed || { fail "pip upgrade fehlgeschlagen"; exit 1; }
 ok "pip installiert: $(python3.11 -m pip --version)"
 
@@ -99,7 +95,7 @@ cd /root
 if [ ! -d "$WORKSPACE" ]; then
     log "Klone Forge Repository (kann 1-2 Min dauern)..."
     git clone https://github.com/lllyasviel/stable-diffusion-webui-forge.git || {
-        fail "git clone fehlgeschlagen – Netzwerk-Problem oder GitHub nicht erreichbar?"
+        fail "git clone fehlgeschlagen"
         exit 1
     }
     ok "Forge Repository geklont"
@@ -111,7 +107,6 @@ cd "$WORKSPACE"
 # ── 6. FORGE KONFIGURATION (webui-user.sh) ───────────────────────────────────
 log "Schritt 6/9: webui-user.sh konfigurieren..."
 
-# Fix 3: GPU-VRAM erkennen und FORGE_ARGS automatisch ergänzen
 if command -v nvidia-smi &>/dev/null; then
     VRAM_GB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk '{print int($1/1024)}' | head -1)
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
@@ -129,16 +124,16 @@ if command -v nvidia-smi &>/dev/null; then
 else
     warn "   nvidia-smi nicht gefunden – GPU-Erkennung übersprungen"
     AUTO_VRAM_ARGS=""
+    VRAM_GB="?"
+    GPU_NAME="unbekannt"
 fi
 
-# FORGE_ARGS aus Template + Auto-VRAM-Args kombinieren
 BASE_ARGS="${FORGE_ARGS:---listen --port 7860 --theme dark --no-download-sd-model --xformers}"
 RESOLVED_FORGE_ARGS="${BASE_ARGS} ${AUTO_VRAM_ARGS}"
 
 cat > "$WORKSPACE/webui-user.sh" << WEBUI_CFG
 #!/bin/bash
 # Automatisch generiert von vast-sd-forge-provisioning.sh
-# Argumente: FORGE_ARGS (Template) + automatische GPU-Erkennung
 export python_cmd="python3.11"
 export COMMANDLINE_ARGS="${RESOLVED_FORGE_ARGS}"
 WEBUI_CFG
@@ -168,7 +163,6 @@ download_model() {
             --output "$DEST_FILE")
         if [ "$HTTP_CODE" != "200" ] || [ ! -s "$DEST_FILE" ]; then
             fail "Civitai-Download fehlgeschlagen (HTTP $HTTP_CODE): $NAME"
-            fail "  → ID $SOURCE gültig? CIVITAI_API_KEY gesetzt? Modell eingeschränkt?"
             rm -f "$DEST_FILE"; return 1
         fi
 
@@ -177,7 +171,6 @@ download_model() {
         log "⬇️  HuggingFace Gated: $NAME"
         if [ -z "${HF_TOKEN:-}" ]; then
             fail "HF_TOKEN nicht gesetzt – $NAME wird übersprungen."
-            fail "  → HF_TOKEN im vast.ai Account-Level setzen."
             return 1
         fi
         HTTP_CODE=$(curl -L \
@@ -187,7 +180,6 @@ download_model() {
             --output "$DEST_FILE")
         if [ "$HTTP_CODE" != "200" ] || [ ! -s "$DEST_FILE" ]; then
             fail "HuggingFace-Download fehlgeschlagen (HTTP $HTTP_CODE): $NAME"
-            fail "  → Lizenz auf huggingface.co akzeptiert? HF_TOKEN gültig?"
             rm -f "$DEST_FILE"; return 1
         fi
 
@@ -201,7 +193,6 @@ download_model() {
             -o "$NAME" -d "$DEST_DIR" \
             "$SOURCE"; then
             fail "aria2c-Download fehlgeschlagen: $NAME"
-            fail "  → URL erreichbar? Netzwerk stabil?"
             return 1
         fi
     fi
@@ -209,7 +200,7 @@ download_model() {
     ok "$NAME heruntergeladen ($(du -sh "$DEST_FILE" | cut -f1))"
 }
 
-# ── 8. MODELLE & EXTENSIONS ───────────────────────────────────────────────────
+# ── 8. MODELLE & EXTENSIONS ──────────────────────────────────────────────────
 log "Schritt 7/9: Modell-Downloads starten (${#DOWNLOADS[@]} Dateien)..."
 FAILED_DOWNLOADS=()
 
@@ -241,29 +232,26 @@ for repo in "${EXTENSIONS[@]}"; do
 done
 ok "Extensions installiert"
 
-# ── Sentinel setzen: Provisioning erfolgreich abgeschlossen ──────────────────
+# ── Sentinel setzen ───────────────────────────────────────────────────────────
 echo "Abgeschlossen am $(date '+%Y-%m-%d %H:%M:%S')" > "$SENTINEL"
 ok "Sentinel gesetzt: $SENTINEL"
 
-# ── 9. FORGE STARTEN (Restart-Loop) ──────────────────────────
-echo "[$(date +%T)] Schritt 9/9: Starte Forge..."
-
-# pip auf kompatiblem Stand halten (pip 26+ bricht CLIP-Build)
-"$WORKSPACE/venv/bin/python" -m pip install "pip<25" setuptools wheel \
-    --quiet 2>/dev/null || true
-
-bash webui.sh -f
-
+# ── 9. FORGE STARTEN (Restart-Loop) ──────────────────────────────────────────
 log "Schritt 9/9: Starte Forge..."
-log "   GPU:        ${GPU_NAME:-unbekannt} (${VRAM_GB:-?}GB VRAM)"
+log "   GPU:        ${GPU_NAME} (${VRAM_GB}GB VRAM)"
 log "   Python:     $(python3.11 --version)"
 log "   Args:       ${RESOLVED_FORGE_ARGS}"
 log "   Log-Datei:  $LOG_FILE"
 
 cd "$WORKSPACE"
 
+# FIX: pip 26+ bricht CLIP-Build → auf 24.x pinnen + joblib für soft_inpainting
+"$WORKSPACE/venv/bin/python" -m pip install "pip<25" setuptools wheel joblib \
+    --quiet 2>/dev/null || true
+
+# FIX: -f Flag für Root-Check, nur ein Restart-Loop
 while true; do
-    bash webui.sh
+    bash webui.sh -f
     EXIT_CODE=$?
     warn "Forge beendet (Exit-Code: $EXIT_CODE) – Neustart in 10 Sekunden..."
     sleep 10
