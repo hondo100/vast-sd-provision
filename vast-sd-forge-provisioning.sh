@@ -20,15 +20,46 @@ step()    { echo "[$(date '+%H:%M:%S')] ▶️  $*"; }
 debug()   { echo "[$(date '+%H:%M:%S')] 🔍 DEBUG: $*"; }
 
 LOG_FILE="/var/log/provisioning.log"
-SENTINEL="${WORKSPACE:-/workspace}/.provisioning_done"
-
 exec > >(tee -a "$LOG_FILE") 2>&1
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WORKSPACE DETECTION – Volume oder Container-Disk
+# ══════════════════════════════════════════════════════════════════════════════
+section "WORKSPACE DETECTION"
+
+step "Warte bis zu 60s auf Volume-Mount unter /workspace..."
+WAITED=0
+while ! mount | grep -q '/workspace' && [ $WAITED -lt 60 ]; do
+    log "  /workspace noch nicht gemountet – warte... (${WAITED}s)"
+    sleep 5
+    WAITED=$((WAITED + 5))
+done
+
+if mount | grep -q '/workspace'; then
+    export WORKSPACE=/workspace
+    ok "Volume erkannt und gemountet → WORKSPACE=/workspace (persistent)"
+elif [ -d /workspace ]; then
+    export WORKSPACE=/workspace
+    ok "/workspace Verzeichnis vorhanden (kein Volume-Mount) → WORKSPACE=/workspace"
+else
+    export WORKSPACE=/data
+    mkdir -p "$WORKSPACE"
+    warn "Kein Volume gemountet, kein /workspace Verzeichnis gefunden."
+    warn "Fallback auf Container-Disk → WORKSPACE=/data (ephemer)"
+fi
+
+log "WORKSPACE gesetzt auf: $WORKSPACE"
+df -h "$WORKSPACE" | while read line; do log "  $line"; done
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+SENTINEL="${WORKSPACE}/.provisioning_done"
 
 section "STARTE SD-FORGE PROVISIONING"
 log "Hostname:    $(hostname)"
 log "Datum/Zeit:  $(date)"
 log "User:        $(whoami)"
-log "WORKSPACE:   ${WORKSPACE:-/workspace}"
+log "WORKSPACE:   ${WORKSPACE}"
 log "Log-Datei:   $LOG_FILE"
 log "Script PID:  $$"
 
@@ -43,28 +74,8 @@ log "Kein Sentinel gefunden – starte vollständiges Provisioning."
 
 # ── Workspace ──────────────────────────────────────────────────────────────
 section "WORKSPACE SETUP"
-
-# WORKSPACE-Variable sicherstellen
-if [ -z "${WORKSPACE:-}" ]; then
-    warn "WORKSPACE nicht gesetzt – verwende /workspace als Standard"
-    export WORKSPACE=/workspace
-fi
-
 FORGE_ROOT="${WORKSPACE}/stable-diffusion-webui-forge"
 log "Forge Root:  $FORGE_ROOT"
-
-step "Warte auf Workspace-Verzeichnis..."
-WAIT=0
-until [ -d "${WORKSPACE}" ]; do
-    log "  /workspace noch nicht verfügbar – warte... (${WAIT}s)"
-    sleep 5
-    WAIT=$((WAIT + 5))
-    if [ $WAIT -ge 120 ]; then
-        fail "WORKSPACE nach 120s immer noch nicht verfügbar: ${WORKSPACE}"
-        exit 1
-    fi
-done
-ok "Workspace verfügbar: ${WORKSPACE}"
 
 debug "Workspace-Inhalt:"
 ls -la "${WORKSPACE}" | while read line; do debug "  $line"; done
