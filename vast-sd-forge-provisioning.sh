@@ -245,4 +245,18 @@ ok "Extensions installiert"
 echo "Abgeschlossen am $(date '+%Y-%m-%d %H:%M:%S')" > "$SENTINEL"
 ok "Sentinel gesetzt: $SENTINEL"
 
-# ── 9. FORGE STARTEN (
+# ── 9. FORGE STARTEN (Restart-Loop) ──────────────────────────
+log "Schritt 9/9: Starte Forge..."
+log "   GPU:        ${GPU_NAME:-unbekannt} (${VRAM_GB:-?}GB VRAM)"
+log "   Python:     $(python3.11 --version)"
+log "   Args:       ${RESOLVED_FORGE_ARGS}"
+log "   Log-Datei:  $LOG_FILE"
+
+cd "$WORKSPACE"
+
+while true; do
+    bash webui.sh
+    EXIT_CODE=$?
+    warn "Forge beendet (Exit-Code: $EXIT_CODE) – Neustart in 10 Sekunden..."
+    sleep 10
+done
