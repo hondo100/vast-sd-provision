@@ -42,7 +42,7 @@ fi
 log "Schritt 1/9: Lade Modell-Konfiguration von GitHub..."
 if ! source <(curl -fsSL \
   -H "Authorization: token ${GITHUB_PAT}" \
-  "https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/model-list.sh?$(date +%s)"); then
+  "https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/modell-list.sh?$(date +%s)"); then
     fail "Konnte model-list.sh nicht laden. GITHUB_PAT korrekt? Repo-Name korrekt?"
     exit 1
 fi
