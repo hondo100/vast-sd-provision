@@ -20,7 +20,7 @@ step()    { echo "[$(date '+%H:%M:%S')] ▶️  $*"; }
 debug()   { echo "[$(date '+%H:%M:%S')] 🔍 DEBUG: $*"; }
 
 LOG_FILE="/var/log/provisioning.log"
-SENTINEL="${WORKSPACE}/.provisioning_done"
+SENTINEL="${WORKSPACE:-/workspace}/.provisioning_done"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -28,7 +28,7 @@ section "STARTE SD-FORGE PROVISIONING"
 log "Hostname:    $(hostname)"
 log "Datum/Zeit:  $(date)"
 log "User:        $(whoami)"
-log "WORKSPACE:   ${WORKSPACE}"
+log "WORKSPACE:   ${WORKSPACE:-/workspace}"
 log "Log-Datei:   $LOG_FILE"
 log "Script PID:  $$"
 
@@ -43,6 +43,13 @@ log "Kein Sentinel gefunden – starte vollständiges Provisioning."
 
 # ── Workspace ──────────────────────────────────────────────────────────────
 section "WORKSPACE SETUP"
+
+# WORKSPACE-Variable sicherstellen
+if [ -z "${WORKSPACE:-}" ]; then
+    warn "WORKSPACE nicht gesetzt – verwende /workspace als Standard"
+    export WORKSPACE=/workspace
+fi
+
 FORGE_ROOT="${WORKSPACE}/stable-diffusion-webui-forge"
 log "Forge Root:  $FORGE_ROOT"
 
@@ -92,9 +99,13 @@ fi
 ok "curl vorhanden: $(curl --version | head -1)"
 
 step "Prüfe python..."
-if ! command -v python &>/dev/null; then
-    fail "python nicht gefunden – kann nicht fortfahren"
+if ! command -v python &>/dev/null && ! command -v python3 &>/dev/null; then
+    fail "Weder python noch python3 gefunden – kann nicht fortfahren"
     exit 1
+fi
+if ! command -v python &>/dev/null; then
+    ln -sf "$(command -v python3)" /usr/bin/python
+    log "python3 als python verlinkt"
 fi
 ok "python vorhanden: $(python --version)"
 
