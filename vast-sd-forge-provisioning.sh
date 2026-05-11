@@ -40,6 +40,7 @@ fi
 
 # ── 1. MODELL-LISTE VON GITHUB LADEN ─────────────────────────────────────────
 log "Schritt 1/9: Lade Modell-Konfiguration von GitHub..."
+# shellcheck source=/dev/null
 if ! source <(curl -fsSL \
   -H "Authorization: token ${GITHUB_PAT}" \
   "https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/model-list.sh?$(date +%s)"); then
@@ -81,11 +82,14 @@ apt-get install -y python3.11 python3.11-venv python3.11-dev python3.11-distutil
 ok "Python 3.11 installiert: $(python3.11 --version)"
 
 log "Schritt 4/9 (pip): pip für Python 3.11 einrichten..."
-curl -fsSL https://bootstrap.pypa.io/get-pip.py | python3.11 || { fail "pip-Installation fehlgeschlagen"; exit 1; }
+# ensurepip ist Debian-sicher – umgeht den RECORD-Datei-Konflikt mit apt-installierten Paketen
+python3.11 -m ensurepip --upgrade || { fail "ensurepip fehlgeschlagen"; exit 1; }
+# --ignore-installed überspringt apt-verwaltete Pakete ohne RECORD-Datei
+python3.11 -m pip install --upgrade pip --ignore-installed || { fail "pip upgrade fehlgeschlagen"; exit 1; }
 ok "pip installiert: $(python3.11 -m pip --version)"
 
 log "Schritt 4/9 (deps): Basis-Pakete installieren..."
-python3.11 -m pip install --upgrade pip setuptools wheel || { fail "pip upgrade fehlgeschlagen"; exit 1; }
+python3.11 -m pip install --upgrade setuptools wheel --ignore-installed || { fail "setuptools/wheel upgrade fehlgeschlagen"; exit 1; }
 python3.11 -m pip install scikit-image --only-binary=:all: || { fail "scikit-image Installation fehlgeschlagen"; exit 1; }
 ok "Python-Basis-Pakete installiert"
 
@@ -189,14 +193,13 @@ download_model() {
 
     else
         log "⬇️  URL → $NAME"
-        aria2c \
+        if ! aria2c \
             --console-log-level=warn \
             -x 16 -s 16 -k 1M \
             --allow-overwrite=true \
             --max-tries=3 --retry-wait=5 \
             -o "$NAME" -d "$DEST_DIR" \
-            "$SOURCE"
-        if [ $? -ne 0 ] || [ ! -s "$DEST_FILE" ]; then
+            "$SOURCE"; then
             fail "aria2c-Download fehlgeschlagen: $NAME"
             fail "  → URL erreichbar? Netzwerk stabil?"
             return 1
@@ -242,9 +245,4 @@ ok "Extensions installiert"
 echo "Abgeschlossen am $(date '+%Y-%m-%d %H:%M:%S')" > "$SENTINEL"
 ok "Sentinel gesetzt: $SENTINEL"
 
-# ── 9. FORGE STARTEN (mit Fix 4: Restart-Loop) ───────────────────────────────
-log "Schritt 9/9: Starte Forge..."
-log "   GPU:        ${GPU_NAME:-unbekannt} (${VRAM_GB:-?}GB VRAM)"
-log "   Python:     $(python3.11 --version)"
-log "   Args:       ${RESOLVED_FORGE_ARGS}"
-log "   L
+# ── 9. FORGE STARTEN (
