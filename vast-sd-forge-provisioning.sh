@@ -159,9 +159,15 @@ else
     debug "venv Python: $("$VENV_DIR/bin/python" --version 2>&1)"
 fi
 
-step "Setze FORGE_ARGS mit --venv-dir..."
-export FORGE_ARGS="${FORGE_ARGS:---port 17860} --venv-dir ${VENV_DIR}"
-ok "FORGE_ARGS gesetzt: $FORGE_ARGS"
+step "Prüfe FORGE_ARGS auf --venv-dir..."
+if [[ "${FORGE_ARGS:-}" != *"--venv-dir"* ]]; then
+    export FORGE_ARGS="${FORGE_ARGS:-} --venv-dir ${VENV_DIR}"
+    ok "--venv-dir zu FORGE_ARGS hinzugefügt"
+    log "  Aktuelle FORGE_ARGS: $FORGE_ARGS"
+else
+    ok "--venv-dir bereits in FORGE_ARGS enthalten – kein Override nötig"
+    debug "Aktuelle FORGE_ARGS: $FORGE_ARGS"
+fi
 
 # ── Umgebungsvariablen prüfen ─────────────────────────────────────────────
 section "UMGEBUNGSVARIABLEN"
