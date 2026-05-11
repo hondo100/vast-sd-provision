@@ -1,153 +1,60 @@
 #!/bin/bash
 
 # ==============================================================================
-# 🚀 VAST.AI PROVISIONING SCRIPT – SD-FORGE (Ubuntu 24.04)
+# 🚀 VAST.AI PROVISIONING SCRIPT – SD-FORGE (vastai/sd-forge:neo Image)
+# Dieses Script wird vom Image automatisch aufgerufen.
+# Forge startet danach automatisch via supervisorctl – KEIN webui.sh nötig!
 # ==============================================================================
 
 set -euo pipefail
 
-# ── Log-Funktionen mit Zeitstempel ────────────────────────────────────────────
+# ── Log-Funktionen ─────────────────────────────────────────────────────────
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
 ok()   { echo "[$(date '+%H:%M:%S')] ✅ $*"; }
 warn() { echo "[$(date '+%H:%M:%S')] ⚠️  $*"; }
 fail() { echo "[$(date '+%H:%M:%S')] ❌ FEHLER: $*" >&2; }
 
-trap 'fail "Script abgebrochen in Zeile $LINENO (Exit-Code: $?). Letzter Befehl: $BASH_COMMAND"' ERR
-
-WORKSPACE="/root/stable-diffusion-webui-forge"
-LOG_FILE="/root/provisioning.log"
-SENTINEL="/root/.provisioning_done"
+LOG_FILE="/var/log/provisioning.log"
+SENTINEL="${WORKSPACE}/.provisioning_done"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
-log "Log wird geschrieben nach: $LOG_FILE"
 log "--- 🚀 Starte SD-Forge Provisioning Script ---"
 
-# ── Fix 1: Idempotenz – bei Neustart nur Forge starten ───────────────────────
+# ── Idempotenz – bei Neustart überspringen ────────────────────────────────
 if [ -f "$SENTINEL" ]; then
-    log "✅ Provisioning bereits abgeschlossen ($(cat $SENTINEL))"
-    log "   Überspringe Installation – starte Forge direkt."
-    log "   (Sentinel löschen mit: rm $SENTINEL)"
-    cd "$WORKSPACE"
-    # FIX: ERR-Trap deaktivieren damit Restart-Loop funktioniert
-    set +e
-    trap - ERR
-    while true; do
-        bash webui.sh -f
-        warn "Forge beendet (Exit-Code: $?) – Neustart in 10 Sekunden..."
-        sleep 10
-    done
+    log "✅ Provisioning bereits abgeschlossen ($(cat $SENTINEL)) – überspringe."
     exit 0
 fi
 
-# ── 1. MODELL-LISTE VON GITHUB LADEN ─────────────────────────────────────────
-log "Schritt 1/9: Lade Modell-Konfiguration von GitHub..."
+# ── Workspace ──────────────────────────────────────────────────────────────
+# vastai/sd-forge:neo Image nutzt /workspace/
+FORGE_ROOT="${WORKSPACE}/stable-diffusion-webui-forge"
+log "Forge Root: $FORGE_ROOT"
+
+# ── Tools sicherstellen ────────────────────────────────────────────────────
+if ! command -v aria2c &>/dev/null; then
+    log "Installiere aria2..."
+    apt-get install -y -qq aria2 || { fail "aria2 Installation fehlgeschlagen"; exit 1; }
+fi
+
+# ── Modell-Konfiguration laden ─────────────────────────────────────────────
+log "Lade Modell-Konfiguration von GitHub..."
 if ! source <(curl -fsSL \
   -H "Authorization: token ${GITHUB_PAT}" \
   "https://raw.githubusercontent.com/hondo100/vast-sd-provision/main/model-list.sh?$(date +%s)"); then
-    fail "Konnte model-list.sh nicht laden. GITHUB_PAT korrekt? Repo-Name korrekt?"
+    fail "Konnte model-list.sh nicht laden."
     exit 1
 fi
 ok "model-list.sh geladen (${#DOWNLOADS[@]} Modelle, ${#EXTENSIONS[@]} Extensions)"
 
-# ── 2. DISK-SPACE-CHECK ───────────────────────────────────────────────────────
-log "Schritt 2/9: Disk-Space prüfen..."
-REQUIRED_GB=15
-AVAILABLE_GB=$(df -BG /root | awk 'NR==2 {print $4}' | tr -d 'G')
-log "   Verfügbar: ${AVAILABLE_GB} GB | Benötigt: ${REQUIRED_GB} GB"
-if [ "$AVAILABLE_GB" -lt "$REQUIRED_GB" ]; then
-    fail "Zu wenig Disk-Space: ${AVAILABLE_GB}GB verfügbar, mind. ${REQUIRED_GB}GB benötigt."
-    fail "Instanz mit mehr Disk-Space starten (vast.ai → Edit Instance → Disk)."
-    exit 1
-fi
-ok "Disk-Space ausreichend (${AVAILABLE_GB}GB verfügbar)"
-
-# ── 3. SYSTEM-UPDATES & TOOLS ────────────────────────────────────────────────
-log "Schritt 3/9: System-Updates & Tools installieren..."
-apt-get update -qq || { fail "apt-get update fehlgeschlagen"; exit 1; }
-apt-get install -y -qq \
-    software-properties-common \
-    aria2 git curl unzip \
-    build-essential ninja-build \
-    libgl1 libglib2.0-0 || { fail "apt-get install fehlgeschlagen"; exit 1; }
-ok "System-Tools installiert"
-
-# ── 4. PYTHON 3.11 VIA DEADSNAKES PPA ────────────────────────────────────────
-log "Schritt 4/9: Python 3.11 via Deadsnakes PPA installieren..."
-add-apt-repository ppa:deadsnakes/ppa -y || { fail "Deadsnakes PPA konnte nicht hinzugefügt werden"; exit 1; }
-apt-get update -qq
-apt-get install -y python3.11 python3.11-venv python3.11-dev python3.11-distutils || {
-    fail "Python 3.11 Installation fehlgeschlagen"
-    exit 1
-}
-ok "Python 3.11 installiert: $(python3.11 --version)"
-
-log "Schritt 4/9 (pip): pip für Python 3.11 einrichten..."
-python3.11 -m ensurepip --upgrade || { fail "ensurepip fehlgeschlagen"; exit 1; }
-python3.11 -m pip install --upgrade pip --ignore-installed || { fail "pip upgrade fehlgeschlagen"; exit 1; }
-ok "pip installiert: $(python3.11 -m pip --version)"
-
-log "Schritt 4/9 (deps): Basis-Pakete installieren..."
-python3.11 -m pip install --upgrade setuptools wheel --ignore-installed || { fail "setuptools/wheel upgrade fehlgeschlagen"; exit 1; }
-python3.11 -m pip install scikit-image --only-binary=:all: || { fail "scikit-image Installation fehlgeschlagen"; exit 1; }
-ok "Python-Basis-Pakete installiert"
-
-# ── 5. FORGE REPOSITORY ──────────────────────────────────────────────────────
-log "Schritt 5/9: Forge Repository..."
-cd /root
-if [ ! -d "$WORKSPACE" ]; then
-    log "Klone Forge Repository (kann 1-2 Min dauern)..."
-    git clone https://github.com/lllyasviel/stable-diffusion-webui-forge.git || {
-        fail "git clone fehlgeschlagen"
-        exit 1
-    }
-    ok "Forge Repository geklont"
-else
-    ok "Forge Repository bereits vorhanden – überspringe Clone"
-fi
-cd "$WORKSPACE"
-
-# ── 6. FORGE KONFIGURATION (webui-user.sh) ───────────────────────────────────
-log "Schritt 6/9: webui-user.sh konfigurieren..."
-
-if command -v nvidia-smi &>/dev/null; then
-    VRAM_GB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk '{print int($1/1024)}' | head -1)
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-    log "   GPU erkannt: $GPU_NAME (${VRAM_GB} GB VRAM)"
-    if [ "$VRAM_GB" -le 8 ]; then
-        AUTO_VRAM_ARGS="--medvram"
-        warn "   Wenig VRAM (${VRAM_GB}GB) – setze --medvram automatisch"
-    elif [ "$VRAM_GB" -le 12 ]; then
-        AUTO_VRAM_ARGS="--medvram-sdxl"
-        warn "   Mittleres VRAM (${VRAM_GB}GB) – setze --medvram-sdxl automatisch"
-    else
-        AUTO_VRAM_ARGS=""
-        ok "   Ausreichend VRAM (${VRAM_GB}GB) – keine VRAM-Einschränkung nötig"
-    fi
-else
-    warn "   nvidia-smi nicht gefunden – GPU-Erkennung übersprungen"
-    AUTO_VRAM_ARGS=""
-    VRAM_GB="?"
-    GPU_NAME="unbekannt"
-fi
-
-# FIX: --api --cuda-malloc --pin-shared-memory in BASE_ARGS ergänzt
-BASE_ARGS="${FORGE_ARGS:---listen --port 7860 --theme dark --no-download-sd-model --xformers --api --cuda-malloc --pin-shared-memory}"
-RESOLVED_FORGE_ARGS="${BASE_ARGS} ${AUTO_VRAM_ARGS}"
-
-cat > "$WORKSPACE/webui-user.sh" << WEBUI_CFG
-#!/bin/bash
-# Automatisch generiert von vast-sd-forge-provisioning.sh
-export python_cmd="python3.11"
-export COMMANDLINE_ARGS="${RESOLVED_FORGE_ARGS}"
-WEBUI_CFG
-chmod +x "$WORKSPACE/webui-user.sh"
-ok "webui-user.sh geschrieben mit Args: ${RESOLVED_FORGE_ARGS}"
-
-# ── 7. DOWNLOAD-FUNKTION ─────────────────────────────────────────────────────
+# ── Download-Funktion ──────────────────────────────────────────────────────
 download_model() {
     local DEST_DIR="$1"
     local NAME="$2"
     local SOURCE="$3"
+
+    # Pfade auf /workspace/ umschreiben falls noch /root/ drin steht
+    DEST_DIR="${DEST_DIR/\/root\/stable-diffusion-webui-forge/$FORGE_ROOT}"
 
     mkdir -p "$DEST_DIR"
     local DEST_FILE="$DEST_DIR/$NAME"
@@ -203,8 +110,8 @@ download_model() {
     ok "$NAME heruntergeladen ($(du -sh "$DEST_FILE" | cut -f1))"
 }
 
-# ── 8. MODELLE & EXTENSIONS ──────────────────────────────────────────────────
-log "Schritt 7/9: Modell-Downloads starten (${#DOWNLOADS[@]} Dateien)..."
+# ── Modelle herunterladen ──────────────────────────────────────────────────
+log "Modell-Downloads starten (${#DOWNLOADS[@]} Dateien)..."
 FAILED_DOWNLOADS=()
 
 for entry in "${DOWNLOADS[@]}"; do
@@ -215,14 +122,14 @@ done
 if [ ${#FAILED_DOWNLOADS[@]} -gt 0 ]; then
     warn "${#FAILED_DOWNLOADS[@]} Downloads fehlgeschlagen:"
     for f in "${FAILED_DOWNLOADS[@]}"; do warn "   - $f"; done
-    warn "Forge wird trotzdem gestartet – fehlende Modelle manuell nachladen."
 else
     ok "Alle ${#DOWNLOADS[@]} Modelle erfolgreich heruntergeladen"
 fi
 
-log "Schritt 8/9: Extensions installieren (${#EXTENSIONS[@]} Repos)..."
-mkdir -p "$WORKSPACE/extensions"
-cd "$WORKSPACE/extensions"
+# ── Extensions installieren ────────────────────────────────────────────────
+log "Extensions installieren (${#EXTENSIONS[@]} Repos)..."
+mkdir -p "$FORGE_ROOT/extensions"
+cd "$FORGE_ROOT/extensions"
 
 for repo in "${EXTENSIONS[@]}"; do
     dir_name=$(basename "$repo" .git)
@@ -235,30 +142,9 @@ for repo in "${EXTENSIONS[@]}"; do
 done
 ok "Extensions installiert"
 
-# ── Sentinel setzen ───────────────────────────────────────────────────────────
+# ── Sentinel setzen ────────────────────────────────────────────────────────
 echo "Abgeschlossen am $(date '+%Y-%m-%d %H:%M:%S')" > "$SENTINEL"
 ok "Sentinel gesetzt: $SENTINEL"
+ok "Provisioning abgeschlossen – Forge startet automatisch via supervisorctl."
 
-# ── 9. FORGE STARTEN (Restart-Loop) ──────────────────────────────────────────
-log "Schritt 9/9: Starte Forge..."
-log "   GPU:        ${GPU_NAME} (${VRAM_GB}GB VRAM)"
-log "   Python:     $(python3.11 --version)"
-log "   Args:       ${RESOLVED_FORGE_ARGS}"
-log "   Log-Datei:  $LOG_FILE"
-
-cd "$WORKSPACE"
-
-# FIX: pip 26+ bricht CLIP-Build → auf 24.x pinnen + joblib für soft_inpainting
-"$WORKSPACE/venv/bin/python" -m pip install "pip<25" setuptools wheel joblib \
-    --quiet 2>/dev/null || true
-
-# FIX: ERR-Trap deaktivieren damit Restart-Loop bei Forge-Crash weitermacht
-set +e
-trap - ERR
-
-while true; do
-    bash webui.sh -f
-    EXIT_CODE=$?
-    warn "Forge beendet (Exit-Code: $EXIT_CODE) – Neustart in 10 Sekunden..."
-    sleep 10
-done
+exit 0
