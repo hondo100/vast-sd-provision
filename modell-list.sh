@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# ==============================================================================
+# =============================================================================
 # 📋 MODELL-KONFIGURATION FÜR SD-FORGE
 # Wird von vast-sd-forge-provisioning.sh eingelesen (via `source`).
 # Jede Zeile: DOWNLOADS+=("DEST_DIR|NAME|SOURCE")
