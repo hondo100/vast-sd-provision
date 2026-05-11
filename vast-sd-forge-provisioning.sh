@@ -19,6 +19,7 @@ section() { echo ""; echo "[$(date '+%H:%M:%S')] ══════════�
 step()    { echo "[$(date '+%H:%M:%S')] ▶️  $*"; }
 debug()   { echo "[$(date '+%H:%M:%S')] 🔍 DEBUG: $*"; }
 
+# ── Logging starten (vor allem anderen) ───────────────────────────────────
 LOG_FILE="/var/log/provisioning.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -29,13 +30,18 @@ section "WORKSPACE DETECTION"
 
 step "Warte bis zu 60s auf Volume-Mount unter /workspace..."
 WAITED=0
-while ! mount | grep -q '/workspace' && [ $WAITED -lt 60 ]; do
+VOLUME_MOUNTED=false
+while [ $WAITED -lt 60 ]; do
+    if mount | grep -q '/workspace'; then
+        VOLUME_MOUNTED=true
+        break
+    fi
     log "  /workspace noch nicht gemountet – warte... (${WAITED}s)"
     sleep 5
     WAITED=$((WAITED + 5))
 done
 
-if mount | grep -q '/workspace'; then
+if [ "$VOLUME_MOUNTED" = true ]; then
     export WORKSPACE=/workspace
     ok "Volume erkannt und gemountet → WORKSPACE=/workspace (persistent)"
 elif [ -d /workspace ]; then
@@ -44,37 +50,37 @@ elif [ -d /workspace ]; then
 else
     export WORKSPACE=/data
     mkdir -p "$WORKSPACE"
-    warn "Kein Volume gemountet, kein /workspace Verzeichnis gefunden."
+    warn "Kein Volume gemountet, kein /workspace gefunden."
     warn "Fallback auf Container-Disk → WORKSPACE=/data (ephemer)"
 fi
 
 log "WORKSPACE gesetzt auf: $WORKSPACE"
 df -h "$WORKSPACE" | while read line; do log "  $line"; done
 
-# ══════════════════════════════════════════════════════════════════════════════
-
+# ── Sentinel & Forge Root ─────────────────────────────────────────────────
 SENTINEL="${WORKSPACE}/.provisioning_done"
+FORGE_ROOT="${WORKSPACE}/stable-diffusion-webui-forge"
 
 section "STARTE SD-FORGE PROVISIONING"
 log "Hostname:    $(hostname)"
 log "Datum/Zeit:  $(date)"
 log "User:        $(whoami)"
 log "WORKSPACE:   ${WORKSPACE}"
+log "FORGE_ROOT:  ${FORGE_ROOT}"
 log "Log-Datei:   $LOG_FILE"
 log "Script PID:  $$"
 
 # ── Idempotenz – bei Neustart überspringen ────────────────────────────────
 section "IDEMPOTENZ-CHECK"
 if [ -f "$SENTINEL" ]; then
-    log "✅ Provisioning bereits abgeschlossen ($(cat $SENTINEL)) – überspringe."
-    log "   Lösche $SENTINEL manuell um das Provisioning erneut auszuführen."
+    log "Provisioning bereits abgeschlossen ($(cat $SENTINEL)) – überspringe."
+    log "Lösche $SENTINEL manuell um das Provisioning erneut auszuführen."
     exit 0
 fi
 log "Kein Sentinel gefunden – starte vollständiges Provisioning."
 
-# ── Workspace ──────────────────────────────────────────────────────────────
+# ── Workspace-Info ─────────────────────────────────────────────────────────
 section "WORKSPACE SETUP"
-FORGE_ROOT="${WORKSPACE}/stable-diffusion-webui-forge"
 log "Forge Root:  $FORGE_ROOT"
 
 debug "Workspace-Inhalt:"
@@ -223,7 +229,10 @@ download_model() {
     local NAME="$2"
     local SOURCE="$3"
 
+    # Pfad-Normalisierung – funktioniert unabhängig vom Hardcode in model-list.sh
     DEST_DIR="${DEST_DIR/\/root\/stable-diffusion-webui-forge/$FORGE_ROOT}"
+    DEST_DIR="${DEST_DIR/\/workspace\/stable-diffusion-webui-forge/$FORGE_ROOT}"
+
     mkdir -p "$DEST_DIR"
     local DEST_FILE="$DEST_DIR/$NAME"
 
