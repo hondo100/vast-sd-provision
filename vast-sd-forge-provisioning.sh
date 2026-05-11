@@ -140,35 +140,6 @@ else
         | while read line; do debug "  $line"; done || true
 fi
 
-# ── Persistentes venv ─────────────────────────────────────────────────────
-section "PERSISTENTES PYTHON VENV"
-VENV_DIR="${WORKSPACE}/venv"
-step "Prüfe venv unter $VENV_DIR..."
-if [ ! -d "$VENV_DIR" ]; then
-    log "venv nicht vorhanden – erstelle persistentes venv..."
-    log "  Pfad: $VENV_DIR"
-    if python -m venv "$VENV_DIR"; then
-        ok "venv erfolgreich erstellt"
-    else
-        fail "python -m venv fehlgeschlagen (exit code: $?)"
-        fail "Prüfe Python-Installation: $(python --version)"
-        exit 1
-    fi
-else
-    ok "Persistentes venv bereits vorhanden: $VENV_DIR"
-    debug "venv Python: $("$VENV_DIR/bin/python" --version 2>&1)"
-fi
-
-step "Prüfe FORGE_ARGS auf --venv-dir..."
-if [[ "${FORGE_ARGS:-}" != *"--venv-dir"* ]]; then
-    export FORGE_ARGS="${FORGE_ARGS:-} --venv-dir ${VENV_DIR}"
-    ok "--venv-dir zu FORGE_ARGS hinzugefügt"
-    log "  Aktuelle FORGE_ARGS: $FORGE_ARGS"
-else
-    ok "--venv-dir bereits in FORGE_ARGS enthalten – kein Override nötig"
-    debug "Aktuelle FORGE_ARGS: $FORGE_ARGS"
-fi
-
 # ── Umgebungsvariablen prüfen ─────────────────────────────────────────────
 section "UMGEBUNGSVARIABLEN"
 step "Prüfe erforderliche Tokens..."
@@ -355,7 +326,6 @@ step "Prüfe kritische Dateien..."
 [ -f "$FORGE_ROOT/launch.py" ]    && ok "launch.py vorhanden"    || fail "launch.py FEHLT!"
 [ -d "$FORGE_ROOT/models" ]       && ok "models/ vorhanden"      || warn "models/ fehlt"
 [ -d "$FORGE_ROOT/extensions" ]   && ok "extensions/ vorhanden"  || warn "extensions/ fehlt"
-[ -d "$VENV_DIR" ]                && ok "venv vorhanden"         || warn "venv fehlt"
 
 step "Gesamter Speicherverbrauch Workspace:"
 du -sh "${WORKSPACE}"/* 2>/dev/null | while read line; do log "  $line"; done
