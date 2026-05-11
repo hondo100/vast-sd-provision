@@ -7,24 +7,25 @@
 #
 # SOURCE kann sein:
 #   - Reine Civitai-ID (z.B. "357609")     → curl + CIVITAI_API_KEY
-#   - Vollständige URL (http/https)         → aria2c (oder curl für HF-Gated)
+#   - Vollständige URL (http/https)         → aria2c (öffentliche HF-Modelle etc.)
+#   - HF_GATED:pfad/zur/datei              → curl + HF_TOKEN (Gated Models)
 #
-# ⚠️  WICHTIG: SVD benötigt HF_TOKEN (Gated Model bei stabilityai).
-#              Alternativ: ungated Mirror bei thesudio/SVD1.1 (siehe unten).
+# ⚠️  SVD: Option B (ungated Mirror) ist Standard – kein HF_TOKEN nötig.
+#          Option A (offiziell) einkommentieren + HF_TOKEN setzen für stabilityai-Repo.
 # ==============================================================================
 
 WORKSPACE="/root/stable-diffusion-webui-forge"
 
 DOWNLOADS=(
     # ── Checkpoints ──────────────────────────────────────────────────────────
-    # Juggernaut XL v9 (Civitai ID – curl + API-Token)
+    # Juggernaut XL v9 (Civitai ID 357609)
     "${WORKSPACE}/models/Stable-diffusion|Juggernaut-XL-v9.safetensors|357609"
 
     # ── SVD (Stable Video Diffusion) ─────────────────────────────────────────
-    # Option A: Offizielles Repo – benötigt HF_TOKEN (Gated Model)
-    # "${WORKSPACE}/models/Stable-diffusion|svd_xt_1_1.safetensors|HF_GATED:stabilityai/stable-video-diffusion-img2vid-xt-1-1/svd_xt_1_1.safetensors"
+    # Option A: Offizielles Repo – benötigt HF_TOKEN + einmalige Lizenzakzeptanz
+    # "${WORKSPACE}/models/Stable-diffusion|svd_xt_1_1.safetensors|HF_GATED:stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors"
     #
-    # Option B: Ungated Mirror – kein Token nötig (empfohlen für Automatisierung)
+    # Option B: Ungated Mirror – kein Token nötig (Standard)
     "${WORKSPACE}/models/Stable-diffusion|svd_xt_1_1.safetensors|https://huggingface.co/thesudio/SVD1.1/resolve/main/svd_xt_1_1.safetensors"
 
     # ── LoRAs ─────────────────────────────────────────────────────────────────
