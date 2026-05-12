@@ -88,16 +88,11 @@ def download_sec(gb, speed):
     base = (gb * 1024) / speed
     return base * 1.4 + 8
 
-def load_data():
-    txt = sys.stdin.read().strip()
-    if not txt:
-        return {"offers": []}
-    try:
-        return json.loads(txt)
-    except Exception:
-        return {"offers": []}
-
-data = load_data()
+text = sys.stdin.read().strip()
+try:
+    data = json.loads(text) if text else {}
+except Exception:
+    data = {}
 offers = data.get("offers", []) or []
 rows = []
 
