@@ -1,5 +1,7 @@
 #!/bin/bash
 
+echo "[INFO] Loading modell-list.sh"
+
 DOWNLOADS=(
   "${WORKSPACE}/stable-diffusion-webui-forge/models/Stable-diffusion|Juggernaut-XL-v9.safetensors|357609"
   "${WORKSPACE}/stable-diffusion-webui-forge/models/Stable-diffusion|svd_xt_1_1.safetensors|https://huggingface.co/thesudio/SVD1.1/resolve/main/svd_xt_1_1.safetensors"
@@ -17,3 +19,5 @@ EXTENSIONS=(
   "https://github.com/thomasasfk/sd-webui-aspect-ratio-helper"
   "https://github.com/Mikubill/sd-webui-controlnet"
 )
+
+echo "[INFO] modell-list.sh loaded with ${#DOWNLOADS[@]} downloads and ${#EXTENSIONS[@]} extensions"
