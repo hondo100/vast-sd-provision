@@ -66,6 +66,10 @@ SDXL_IMG_PER_H = {
     "Tesla V100":280, "Tesla T4":180
 }
 
+GREEN_BG = "\033[42m"
+YELLOW_BG = "\033[43m"
+RESET = "\033[0m"
+
 def short_gpu(name, width=14):
     return name if len(name) <= width else name[:width-1] + "…"
 
@@ -94,11 +98,16 @@ for o in offers:
     dlspd = o.get("inet_down", 0) or 0
     dlsec = estimate_download_sec(DOWNLOAD_GB, float(dlspd)) if dlspd else None
     dl_cost = o.get("inet_down_cost", 0) * DOWNLOAD_GB
-    session_h = SESSION_H if "${MODE}" == "prod" else (SESSION_MIN_TEST / 60.0)
-    total = dph * session_h + dl_cost
+
+    prod_session_h = SESSION_H
+    test_session_h = SESSION_MIN_TEST / 60.0
+    total_prod = dph * prod_session_h + dl_cost
+    total_test = dph * test_session_h + dl_cost
 
     img_h, src = get_perf(raw, o.get("dlperf", 0))
-    cost_100 = (total / (img_h * SESSION_H) * 100) if img_h > 0 else 999
+    prod_score = (total_prod / (img_h * SESSION_H) * 100) if img_h > 0 else 999
+    test_score = total_test + (dlsec / 60.0 if dlsec else 999)
+    score = prod_score if "${MODE}" == "prod" else test_score
 
     if dlsec is None:
         dltxt = "?"
@@ -112,9 +121,9 @@ for o in offers:
         "gpu": gpu,
         "vram": vram_gb,
         "dph": dph,
-        "total": total,
+        "total": total_prod if "${MODE}" == "prod" else total_test,
         "img_h": img_h,
-        "cost_100": cost_100,
+        "score": score,
         "dlspd": dlspd,
         "dltxt": dltxt,
         "rel": o.get("reliability", 0),
@@ -123,21 +132,35 @@ for o in offers:
         "dlsec": dlsec,
     })
 
-results.sort(key=lambda x: x["cost_100"] if "${MODE}" == "prod" else x["total"])
+results.sort(key=lambda x: x["score"])
+results = results[:TOP_N]
 
-fmt_header = "{:<3} {:<14} {:>6} {:>6} {:>7} {:>5} {:>8} {:>9} {:>7} {:>5} {:<16} {}"
-fmt_line   = "{:<3} {:<14} {:>6} {:>6.3f} {:>7.4f} {:>5} {:>8.4f} {:>9} {:>7} {:>5.3f} {:<16} {}"
+fmt_header = "{:<3} {:<14} {:>6} {:>6} {:>7} {:>5} {:>8} {:>10} {:>6} {:>5} {:<16} {}".format(
+    "Nr", "GPU", "VRAM", "$/h", "Gesamt", "img/h", "Score", "DL", "Zeit", "Rel", "Ort", "ID"
+)
+print(fmt_header)
+print("-" * 132)
 
-print(fmt_header.format("Rng", "GPU", "VRAM", "$/h", "Gesamt", "img/h", "$/100", "DL", "Zeit", "Rel", "Ort", "ID"), file=sys.stderr)
-print("-" * 132, file=sys.stderr)
+for i, r in enumerate(results, 1):
+    line = "{:<3} {:<14} {:>6} {:>6.3f} {:>7.4f} {:>5} {:>8.4f} {:>10} {:>6} {:>5.3f} {:<16} {}".format(
+        i, r["gpu"], f'{r["vram"]:.1f}G', r["dph"], r["total"], r["img_h"], r["score"],
+        f'{int(r["dlspd"])} MB/s' if r["dlspd"] else "?", r["dltxt"], r["rel"], r["loc"], r["id"]
+    )
+    if i == 1:
+        print(f"{GREEN_BG}{line}{RESET}" if "${MODE}" == "prod" else f"{YELLOW_BG}{line}{RESET}")
+    else:
+        print(line)
 
-for i, r in enumerate(results[:TOP_N], 1):
-    dl = f"{int(r['dlspd'])} MB/s" if r["dlspd"] else "?"
-    print(fmt_line.format(i, r["gpu"], f"{r['vram']:.1f}G", r["dph"], r["total"], r["img_h"], r["cost_100"], dl, r["dltxt"], r["rel"], r["loc"], r["id"]), file=sys.stderr)
-
-print(results[0]["id"])
+print("")
+best = results[0]["id"] if results else ""
+print(best)
 PYEOF
 )
+
+if [ -z "$BEST_ID" ]; then
+    echo "Keine passenden Angebote gefunden."
+    exit 1
+fi
 
 echo ""
 echo "Top 10 berechnet."
