@@ -16,6 +16,7 @@ VAST_STEP()  { echo -e "\033[1;36m[VAST][STEP $1]\033[0m ${*:2}"; }
 VAST_INFO "Provisioning started"
 
 VAST_STEP 1 "creating directories"
+set -x
 mkdir -p \
   "$WORKSPACE/ComfyUI/models/checkpoints" \
   "$WORKSPACE/ComfyUI/models/loras" \
@@ -29,20 +30,25 @@ mkdir -p \
   "$WORKSPACE/forge-models/ESRGAN" \
   "$WORKSPACE/forge-models/torch_deepdanbooru" \
   "$WORKSPACE/outputs"
+set +x
 VAST_OK "directories ready"
 
 VAST_STEP 2 "fetching model list"
+set -x
 MODEL_LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/refs/heads/main/modell-list.sh"
 TMP_MODEL_LIST="$(mktemp)"
-
 curl -fsSL \
   -H "Authorization: token ${GITHUB_PAT}" \
   "$MODEL_LIST_URL" \
   -o "$TMP_MODEL_LIST"
+set +x
+VAST_OK "model list fetched"
 
 VAST_STEP 3 "loading model list"
+set -x
 source "$TMP_MODEL_LIST"
 rm -f "$TMP_MODEL_LIST"
+set +x
 VAST_OK "model list loaded"
 
 download_civitai() {
