@@ -32,25 +32,19 @@ if [ -z "$VASTAI_API_KEY" ]; then
     exit 1
 fi
 
-export RESPONSE_RAW MODE SESSION_HOURS_PROD SESSION_MIN_TEST MODEL_DOWNLOAD_GB RESULTS MIN_VRAM_MB MIN_RELIABILITY FORGE_TEMPLATE_HASH FORGE_DISK DRY_RUN
-
 echo ""
 echo "Suche verfuegbare GPU-Instanzen bei Vast.ai..."
 echo "Mindest-VRAM: ${MIN_VRAM_MB} MB | Reliability: >= ${MIN_RELIABILITY}"
 echo ""
 
-RESPONSE=$(curl -sL --request POST \
+curl -sL --request POST \
     --url "https://console.vast.ai/api/v0/bundles/" \
     --header "Authorization: Bearer ${VASTAI_API_KEY}" \
     --header "Content-Type: application/json" \
-    --data "{\"limit\":200,\"type\":\"on-demand\",\"verified\":{\"eq\":true},\"rentable\":{\"eq\":true},\"rented\":{\"eq\":false},\"gpu_ram\":{\"gte\":${MIN_VRAM_MB}},\"reliability\":{\"gte\":${MIN_RELIABILITY}},\"num_gpus\":{\"eq\":1},\"order\":[[\"dph_total\",\"asc\"]]}")
-
-export RESPONSE_RAW="$RESPONSE"
-
-python3 - <<'PYEOF'
+    --data "{\"limit\":200,\"type\":\"on-demand\",\"verified\":{\"eq\":true},\"rentable\":{\"eq\":true},\"rented\":{\"eq\":false},\"gpu_ram\":{\"gte\":${MIN_VRAM_MB}},\"reliability\":{\"gte\":${MIN_RELIABILITY}},\"num_gpus\":{\"eq\":1},\"order\":[[\"dph_total\",\"asc\"]]}" | \
+MODE="$MODE" SESSION_HOURS_PROD="$SESSION_HOURS_PROD" SESSION_MIN_TEST="$SESSION_MIN_TEST" MODEL_DOWNLOAD_GB="$MODEL_DOWNLOAD_GB" RESULTS="$RESULTS" FORGE_TEMPLATE_HASH="$FORGE_TEMPLATE_HASH" FORGE_DISK="$FORGE_DISK" DRY_RUN="$DRY_RUN" python3 - <<'PYEOF'
 import json, os, sys, subprocess
 
-RESPONSE = os.environ.get("RESPONSE_RAW", "")
 MODE = os.environ.get("MODE", "prod")
 SESSION_HOURS_PROD = float(os.environ.get("SESSION_HOURS_PROD", "2"))
 SESSION_MIN_TEST = float(os.environ.get("SESSION_MIN_TEST", "15"))
@@ -94,13 +88,14 @@ def download_sec(gb, speed):
     base = (gb * 1024) / speed
     return base * 1.4 + 8
 
-def parse_response(resp):
+def parse_response():
+    txt = sys.stdin.read()
     try:
-        return json.loads(resp)
+        return json.loads(txt)
     except Exception:
         return {"offers": []}
 
-data = parse_response(RESPONSE)
+data = parse_response()
 offers = data.get("offers", [])
 rows = []
 
@@ -111,7 +106,7 @@ for o in offers:
     dph = float(o.get("dph_total", 0) or 0)
     dlspd = float(o.get("inet_down", 0) or 0)
     dsec = download_sec(DOWNLOAD_GB, dlspd)
-    img_h, src = perf(raw, o.get("dlperf", 0))
+    img_h, _ = perf(raw, o.get("dlperf", 0))
     session_h = SESSION_HOURS_PROD if MODE == "prod" else (SESSION_MIN_TEST / 60.0)
     total = dph * session_h + float(o.get("inet_down_cost", 0) or 0) * DOWNLOAD_GB
     score = (total / (img_h * SESSION_HOURS_PROD) * 100) if MODE == "prod" else total
@@ -135,7 +130,6 @@ for o in offers:
         "dltxt": dltxt,
         "rel": float(o.get("reliability", 0) or 0),
         "loc": short(o.get("geolocation", "?"), 16),
-        "raw": raw
     })
 
 rows.sort(key=lambda x: x["score"])
@@ -149,18 +143,8 @@ print("-" * len(header))
 
 for i, r in enumerate(rows, 1):
     line = "{:<3} {:<14} {:>6} {:>6.3f} {:>7.4f} {:>5} {:>8.4f} {:>10} {:>6} {:>5.3f} {:<16} {}".format(
-        i,
-        r["gpu"],
-        f'{r["vram"]:.1f}G',
-        r["dph"],
-        r["total"],
-        r["img_h"],
-        r["score"],
-        f'{int(r["dlspd"])} MB/s' if r["dlspd"] else "?",
-        r["dltxt"],
-        r["rel"],
-        r["loc"],
-        r["id"]
+        i, r["gpu"], f'{r["vram"]:.1f}G', r["dph"], r["total"], r["img_h"], r["score"],
+        f'{int(r["dlspd"])} MB/s' if r["dlspd"] else "?", r["dltxt"], r["rel"], r["loc"], r["id"]
     )
     if i == 1:
         bg = GREEN_BG if MODE == "prod" else YELLOW_BG
