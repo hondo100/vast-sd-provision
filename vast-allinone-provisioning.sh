@@ -7,14 +7,31 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo "[INFO] Starting vast-allinone-provisioning.sh"
 
 : "${WORKSPACE:=/workspace}"
+: "${GITHUB_PAT:=}"
 : "${CIVITAI_API_KEY:=}"
 : "${HF_TOKEN:=}"
 
-mkdir -p "$WORKSPACE"
+if [[ -z "${GITHUB_PAT}" ]]; then
+  echo "[WARN] GITHUB_PAT is not set. Private GitHub raw fetch may fail."
+fi
 
-MODEL_LIST_URL="https://raw.githubusercontent.com/DEINUSER/DEINREPO/main/modell-list.sh"
+mkdir -p \
+  "$WORKSPACE/ComfyUI/models/checkpoints" \
+  "$WORKSPACE/ComfyUI/models/loras" \
+  "$WORKSPACE/ComfyUI/models/vae" \
+  "$WORKSPACE/ComfyUI/models/controlnet" \
+  "$WORKSPACE/ComfyUI/models/embeddings" \
+  "$WORKSPACE/ComfyUI/models/upscale_models" \
+  "$WORKSPACE/ComfyUI/models/ultralytics/bbox" \
+  "$WORKSPACE/forge-models/Stable-diffusion" \
+  "$WORKSPACE/forge-models/Lora" \
+  "$WORKSPACE/forge-models/ESRGAN" \
+  "$WORKSPACE/forge-models/torch_deepdanbooru" \
+  "$WORKSPACE/outputs"
+
+MODEL_LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/refs/heads/main/modell-list.sh"
 echo "[INFO] Loading model list from $MODEL_LIST_URL"
-source <(curl -fsSL "$MODEL_LIST_URL")
+source <(curl -fsSL -H "Authorization: token ${GITHUB_PAT}" "$MODEL_LIST_URL")
 
 download_civitai() {
   local dest="$1"
