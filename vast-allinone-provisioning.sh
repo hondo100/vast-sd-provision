@@ -10,9 +10,12 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 VAST_INFO()  { echo -e "\033[1;34m[VAST][INFO]\033[0m $*"; }
 VAST_WARN()  { echo -e "\033[1;33m[VAST][WARN]\033[0m $*"; }
 VAST_ERROR() { echo -e "\033[1;31m[VAST][ERROR]\033[0m $*"; }
+VAST_OK()    { echo -e "\033[1;32m[VAST][OK]\033[0m $*"; }
+VAST_STEP()  { echo -e "\033[1;36m[VAST][STEP $1]\033[0m ${*:2}"; }
 
 VAST_INFO "Provisioning started"
 
+VAST_STEP 1 "creating directories"
 mkdir -p \
   "$WORKSPACE/ComfyUI/models/checkpoints" \
   "$WORKSPACE/ComfyUI/models/loras" \
@@ -26,8 +29,9 @@ mkdir -p \
   "$WORKSPACE/forge-models/ESRGAN" \
   "$WORKSPACE/forge-models/torch_deepdanbooru" \
   "$WORKSPACE/outputs"
+VAST_OK "directories ready"
 
-VAST_INFO "Fetching model list"
+VAST_STEP 2 "fetching model list"
 MODEL_LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/refs/heads/main/modell-list.sh"
 TMP_MODEL_LIST="$(mktemp)"
 
@@ -36,9 +40,10 @@ curl -fsSL \
   "$MODEL_LIST_URL" \
   -o "$TMP_MODEL_LIST"
 
-VAST_INFO "Loading model list"
+VAST_STEP 3 "loading model list"
 source "$TMP_MODEL_LIST"
 rm -f "$TMP_MODEL_LIST"
+VAST_OK "model list loaded"
 
 download_civitai() {
   local dest="$1" name="$2" id="$3"
@@ -49,7 +54,7 @@ download_civitai() {
   fi
   VAST_INFO "Downloading Civitai: $name (id=$id)"
   curl -fL --retry 3 "https://civitai.com/api/download/models/$id" -o "$dest/$name"
-  VAST_INFO "Done: $name"
+  VAST_OK "Downloaded: $name"
 }
 
 download_url() {
@@ -61,7 +66,7 @@ download_url() {
   fi
   VAST_INFO "Downloading URL: $name"
   curl -fL --retry 3 -o "$dest/$name" "$url"
-  VAST_INFO "Done: $name"
+  VAST_OK "Downloaded: $name"
 }
 
 download_gated() {
@@ -80,13 +85,13 @@ download_gated() {
     -H "Authorization: Bearer ${HF_TOKEN}" \
     "https://huggingface.co/${path}" \
     -o "$dest/$name"
-  VAST_INFO "Done: $name"
+  VAST_OK "Downloaded: $name"
 }
 
-VAST_INFO "Processing downloads: ${#DOWNLOADS[@]}"
+VAST_STEP 4 "processing downloads (${#DOWNLOADS[@]})"
 for entry in "${DOWNLOADS[@]}"; do
   IFS='|' read -r dest name src <<< "$entry"
-  VAST_INFO "Processing entry: $name -> $dest"
+  VAST_INFO "Processing: $name"
   case "$src" in
     HF_GATED:*)
       download_gated "$dest" "$name" "${src#HF_GATED:}"
@@ -99,12 +104,13 @@ for entry in "${DOWNLOADS[@]}"; do
       ;;
   esac
 done
+VAST_OK "downloads processed"
 
 if declare -p EXTENSIONS >/dev/null 2>&1; then
+  VAST_STEP 5 "processing extensions (${#EXTENSIONS[@]})"
   EXT_DIR="$WORKSPACE/extensions"
   mkdir -p "$EXT_DIR"
   cd "$EXT_DIR"
-  VAST_INFO "Processing extensions: ${#EXTENSIONS[@]}"
   for repo in "${EXTENSIONS[@]}"; do
     dir="$(basename "$repo" .git)"
     if [[ -d "$dir" ]]; then
@@ -112,8 +118,9 @@ if declare -p EXTENSIONS >/dev/null 2>&1; then
     else
       VAST_INFO "Cloning extension: $repo"
       git clone "$repo" || VAST_WARN "Clone failed: $repo"
+      [[ -d "$dir" ]] && VAST_OK "Cloned: $dir"
     fi
   done
 fi
 
-VAST_INFO "Provisioning complete"
+VAST_OK "Provisioning complete"
