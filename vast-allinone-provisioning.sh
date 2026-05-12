@@ -7,7 +7,11 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 : "${WORKSPACE:=/workspace}"
 : "${GITHUB_PAT:?GITHUB_PAT is not set}"
 
-echo "[INFO] Starting provisioning at $(date -Is)"
+ts() { date -Is; }
+
+log() { echo "[$(ts)] [$1] ${*:2}"; }
+
+log INFO "Starting provisioning"
 
 mkdir -p \
   "$WORKSPACE/ComfyUI/models/checkpoints" \
@@ -23,81 +27,93 @@ mkdir -p \
   "$WORKSPACE/forge-models/torch_deepdanbooru" \
   "$WORKSPACE/outputs"
 
+log INFO "Fetching model list from GitHub"
 MODEL_LIST_URL="https://raw.githubusercontent.com/hondo100/vast-sd-provision/refs/heads/main/modell-list.sh"
 TMP_MODEL_LIST="$(mktemp)"
 
-echo "[INFO] Fetching model list"
 curl -fsSL \
   -H "Authorization: token ${GITHUB_PAT}" \
   "$MODEL_LIST_URL" \
   -o "$TMP_MODEL_LIST"
 
+log INFO "Loading model list"
 source "$TMP_MODEL_LIST"
 rm -f "$TMP_MODEL_LIST"
 
 download_civitai() {
-  local dest="$1"
-  local name="$2"
-  local id="$3"
+  local dest="$1" name="$2" id="$3"
   mkdir -p "$dest"
-  [[ -s "$dest/$name" ]] && { echo "[SKIP] $name already exists"; return 0; }
-  echo "[DL] Civitai $name"
+  if [[ -s "$dest/$name" ]]; then
+    log INFO "SKIP existing Civitai file: $name"
+    return 0
+  fi
+  log INFO "Downloading Civitai: $name ($id)"
   curl -fL --retry 3 "https://civitai.com/api/download/models/$id" -o "$dest/$name"
+  log INFO "Done: $name"
 }
 
 download_url() {
-  local dest="$1"
-  local name="$2"
-  local url="$3"
+  local dest="$1" name="$2" url="$3"
   mkdir -p "$dest"
-  [[ -s "$dest/$name" ]] && { echo "[SKIP] $name already exists"; return 0; }
-  echo "[DL] $name"
+  if [[ -s "$dest/$name" ]]; then
+    log INFO "SKIP existing URL file: $name"
+    return 0
+  fi
+  log INFO "Downloading URL: $name"
   curl -fL --retry 3 -o "$dest/$name" "$url"
+  log INFO "Done: $name"
 }
 
 download_gated() {
-  local dest="$1"
-  local name="$2"
-  local path="$3"
+  local dest="$1" name="$2" path="$3"
   mkdir -p "$dest"
-  [[ -s "$dest/$name" ]] && { echo "[SKIP] $name already exists"; return 0; }
-  echo "[DL] HF gated $name"
+  if [[ -s "$dest/$name" ]]; then
+    log INFO "SKIP existing HF gated file: $name"
+    return 0
+  fi
+  if [[ -z "${HF_TOKEN:-}" ]]; then
+    log WARN "HF_TOKEN is empty, cannot download gated file: $name"
+    return 1
+  fi
+  log INFO "Downloading HF gated: $name"
   curl -fL --retry 3 \
-    -H "Authorization: Bearer ${HF_TOKEN:-}" \
+    -H "Authorization: Bearer ${HF_TOKEN}" \
     "https://huggingface.co/${path}" \
     -o "$dest/$name"
+  log INFO "Done: $name"
 }
 
-if declare -p DOWNLOADS >/dev/null 2>&1; then
-  for entry in "${DOWNLOADS[@]}"; do
-    IFS='|' read -r dest name src <<< "$entry"
-    case "$src" in
-      HF_GATED:*)
-        download_gated "$dest" "$name" "${src#HF_GATED:}"
-        ;;
-      http://*|https://*)
-        download_url "$dest" "$name" "$src"
-        ;;
-      *)
-        download_civitai "$dest" "$name" "$src"
-        ;;
-    esac
-  done
-fi
+log INFO "Processing downloads"
+for entry in "${DOWNLOADS[@]}"; do
+  IFS='|' read -r dest name src <<< "$entry"
+  case "$src" in
+    HF_GATED:*)
+      gated_path="${src#HF_GATED:}"
+      download_gated "$dest" "$name" "$gated_path"
+      ;;
+    http://*|https://*)
+      download_url "$dest" "$name" "$src"
+      ;;
+    *)
+      download_civitai "$dest" "$name" "$src"
+      ;;
+  esac
+done
 
 if declare -p EXTENSIONS >/dev/null 2>&1; then
+  log INFO "Processing extensions"
   EXT_DIR="$WORKSPACE/extensions"
   mkdir -p "$EXT_DIR"
   cd "$EXT_DIR"
   for repo in "${EXTENSIONS[@]}"; do
     dir="$(basename "$repo" .git)"
     if [[ -d "$dir" ]]; then
-      echo "[SKIP] Extension exists: $dir"
+      log INFO "SKIP existing extension: $dir"
     else
-      echo "[CLONE] $repo"
-      git clone "$repo" || true
+      log INFO "Cloning extension: $repo"
+      git clone "$repo" || log WARN "Clone failed: $repo"
     fi
   done
 fi
 
-echo "[INFO] Provisioning complete"
+log INFO "Provisioning complete"
