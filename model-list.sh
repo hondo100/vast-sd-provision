@@ -1,52 +1,19 @@
 #!/bin/bash
 
-# =============================================================================
-# 📋 MODELL-KONFIGURATION FÜR SD-FORGE
-# Wird von vast-sd-forge-provisioning.sh eingelesen (via `source`).
-# Jede Zeile: DOWNLOADS+=("DEST_DIR|NAME|SOURCE")
-#
-# SOURCE kann sein:
-#   - Reine Civitai-ID (z.B. "357609")     → curl + CIVITAI_API_KEY
-#   - Vollständige URL (http/https)         → aria2c (öffentliche HF-Modelle etc.)
-#   - HF_GATED:pfad/zur/datei              → curl + HF_TOKEN (Gated Models)
-#
-# ⚠️  SVD: Option B (ungated Mirror) ist Standard – kein HF_TOKEN nötig.
-#          Option A (offiziell) einkommentieren + HF_TOKEN setzen für stabilityai-Repo.
-# =============================================================================
-
-# HINWEIS: WORKSPACE wird vom Provisioning-Script als Umgebungsvariable gesetzt.
-# Hier NICHT definieren – kommt vom vastai/sd-forge:neo Image automatisch.
-
 DOWNLOADS=(
-    # ── Checkpoints ──────────────────────────────────────────────────────────
-    # Juggernaut XL v9 (Civitai ID 357609)
     "${WORKSPACE}/stable-diffusion-webui-forge/models/Stable-diffusion|Juggernaut-XL-v9.safetensors|357609"
-
-    # ── SVD (Stable Video Diffusion) ─────────────────────────────────────────
-    # Option A: Offizielles Repo – benötigt HF_TOKEN + einmalige Lizenzakzeptanz
-    # "${WORKSPACE}/stable-diffusion-webui-forge/models/Stable-diffusion|svd_xt_1_1.safetensors|HF_GATED:stabilityai/stable-video-diffusion-img2vid-xt-1-1/resolve/main/svd_xt_1_1.safetensors"
-    #
-    # Option B: Ungated Mirror – kein Token nötig (Standard)
     "${WORKSPACE}/stable-diffusion-webui-forge/models/Stable-diffusion|svd_xt_1_1.safetensors|https://huggingface.co/thesudio/SVD1.1/resolve/main/svd_xt_1_1.safetensors"
-
-    # ── LoRAs ─────────────────────────────────────────────────────────────────
     "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|film_grain_cinematic.safetensors|518040"
     "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|detail_tweaker_xl.safetensors|135929"
     "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|real-vis-xl-enhancer.safetensors|135010"
     "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|perfect_eyes_xl.safetensors|128461"
     "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|skin_detail_xl.safetensors|340833"
-
-    # ── ESRGAN Upscaler ───────────────────────────────────────────────────────
     "${WORKSPACE}/stable-diffusion-webui-forge/models/ESRGAN|4x-UltraSharp.pth|https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth"
     "${WORKSPACE}/stable-diffusion-webui-forge/models/ESRGAN|Siax_200k.pth|2052724"
-
-    # ── Tagger Modell ─────────────────────────────────────────────────────────
     "${WORKSPACE}/stable-diffusion-webui-forge/models/torch_deepdanbooru|wd-v1-4-swinv2-tagger-v2.onnx|https://huggingface.co/SmilingWolf/wd-v1-4-swinv2-tagger-v2/resolve/main/model.onnx"
 )
 
-# ── Extensions ───────────────────────────────────────────────────────────────
 EXTENSIONS=(
-    "https://github.com/Kataragi/stable-diffusion-webui-tagger-fork"
     "https://github.com/thomasasfk/sd-webui-aspect-ratio-helper"
     "https://github.com/Mikubill/sd-webui-controlnet"
 )
