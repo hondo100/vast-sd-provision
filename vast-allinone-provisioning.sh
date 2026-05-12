@@ -40,14 +40,9 @@ download_civitai() {
   local name="$2"
   local id="$3"
   mkdir -p "$dest"
-  if [[ -s "$dest/$name" ]]; then
-    echo "[SKIP] $name already exists"
-    return 0
-  fi
+  [[ -s "$dest/$name" ]] && { echo "[SKIP] $name already exists"; return 0; }
   echo "[DL] Civitai $name"
-  curl -fL --retry 3 \
-    "https://civitai.com/api/download/models/$id" \
-    -o "$dest/$name"
+  curl -fL --retry 3 "https://civitai.com/api/download/models/$id" -o "$dest/$name"
 }
 
 download_url() {
@@ -55,14 +50,9 @@ download_url() {
   local name="$2"
   local url="$3"
   mkdir -p "$dest"
-  if [[ -s "$dest/$name" ]]; then
-    echo "[SKIP] $name already exists"
-    return 0
-  fi
+  [[ -s "$dest/$name" ]] && { echo "[SKIP] $name already exists"; return 0; }
   echo "[DL] $name"
-  curl -fL --retry 3 \
-    -o "$dest/$name" \
-    "$url"
+  curl -fL --retry 3 -o "$dest/$name" "$url"
 }
 
 download_gated() {
@@ -70,10 +60,7 @@ download_gated() {
   local name="$2"
   local path="$3"
   mkdir -p "$dest"
-  if [[ -s "$dest/$name" ]]; then
-    echo "[SKIP] $name already exists"
-    return 0
-  fi
+  [[ -s "$dest/$name" ]] && { echo "[SKIP] $name already exists"; return 0; }
   echo "[DL] HF gated $name"
   curl -fL --retry 3 \
     -H "Authorization: Bearer ${HF_TOKEN:-}" \
@@ -81,13 +68,12 @@ download_gated() {
     -o "$dest/$name"
 }
 
-if [[ "${#DOWNLOADS[@]:-0}" -gt 0 ]]; then
+if declare -p DOWNLOADS >/dev/null 2>&1; then
   for entry in "${DOWNLOADS[@]}"; do
     IFS='|' read -r dest name src <<< "$entry"
     case "$src" in
       HF_GATED:*)
-        gated_path="${src#HF_GATED:}"
-        download_gated "$dest" "$name" "$gated_path"
+        download_gated "$dest" "$name" "${src#HF_GATED:}"
         ;;
       http://*|https://*)
         download_url "$dest" "$name" "$src"
@@ -99,7 +85,7 @@ if [[ "${#DOWNLOADS[@]:-0}" -gt 0 ]]; then
   done
 fi
 
-if [[ "${#EXTENSIONS[@]:-0}" -gt 0 ]]; then
+if declare -p EXTENSIONS >/dev/null 2>&1; then
   EXT_DIR="$WORKSPACE/extensions"
   mkdir -p "$EXT_DIR"
   cd "$EXT_DIR"
