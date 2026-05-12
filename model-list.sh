@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "[INFO] Loading modell-list.sh"
+echo -e "\033[1;34m[VAST][INFO]\033[0m Loading modell-list.sh"
 
 DOWNLOADS=(
   "${WORKSPACE}/stable-diffusion-webui-forge/models/Stable-diffusion|Juggernaut-XL-v9.safetensors|357609"
@@ -20,4 +20,4 @@ EXTENSIONS=(
   "https://github.com/Mikubill/sd-webui-controlnet"
 )
 
-echo "[INFO] modell-list.sh loaded with ${#DOWNLOADS[@]} downloads and ${#EXTENSIONS[@]} extensions"
+echo -e "\033[1;34m[VAST][INFO]\033[0m modell-list.sh loaded: ${#DOWNLOADS[@]} downloads, ${#EXTENSIONS[@]} extensions"
