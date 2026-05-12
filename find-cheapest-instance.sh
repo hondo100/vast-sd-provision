@@ -88,14 +88,7 @@ def download_sec(gb, speed):
     base = (gb * 1024) / speed
     return base * 1.4 + 8
 
-def parse_response():
-    txt = sys.stdin.read()
-    try:
-        return json.loads(txt)
-    except Exception:
-        return {"offers": []}
-
-data = parse_response()
+data = json.loads(sys.stdin.read() or '{"offers": []}')
 offers = data.get("offers", [])
 rows = []
 
