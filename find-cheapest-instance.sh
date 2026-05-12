@@ -37,24 +37,22 @@ echo "Suche verfuegbare GPU-Instanzen bei Vast.ai..."
 echo "Mindest-VRAM: ${MIN_VRAM_MB} MB | Reliability: >= ${MIN_RELIABILITY}"
 echo ""
 
-RESPONSE=$(curl -sL --request POST \
+curl -sL --request POST \
     --url "https://console.vast.ai/api/v0/bundles/" \
     --header "Authorization: Bearer ${VASTAI_API_KEY}" \
     --header "Content-Type: application/json" \
-    --data "{\"limit\":200,\"type\":\"on-demand\",\"verified\":{\"eq\":true},\"rentable\":{\"eq\":true},\"rented\":{\"eq\":false},\"gpu_ram\":{\"gte\":${MIN_VRAM_MB}},\"reliability\":{\"gte\":${MIN_RELIABILITY}},\"num_gpus\":{\"eq\":1},\"order\":[[\"dph_total\",\"asc\"]]}")
+    --data "{\"limit\":200,\"type\":\"on-demand\",\"verified\":{\"eq\":true},\"rentable\":{\"eq\":true},\"rented\":{\"eq\":false},\"gpu_ram\":{\"gte\":${MIN_VRAM_MB}},\"reliability\":{\"gte\":${MIN_RELIABILITY}},\"num_gpus\":{\"eq\":1},\"order\":[[\"dph_total\",\"asc\"]]}" | \
+python3 - "$MODE" "$SESSION_HOURS" "$SESSION_MIN_TEST" "$MODEL_DOWNLOAD_GB" "$RESULTS" "$FORGE_TEMPLATE_HASH" "$FORGE_DISK" "$DRY_RUN" <<'PYEOF'
+import json, sys, subprocess
 
-python3 - <<'PYEOF'
-import json, os, sys, subprocess
-
-response = os.environ.get("RESPONSE_RAW", "")
-MODE = os.environ.get("MODE", "prod")
-SESSION_HOURS = float(os.environ.get("SESSION_HOURS", "2"))
-SESSION_MIN_TEST = float(os.environ.get("SESSION_MIN_TEST", "15"))
-DOWNLOAD_GB = float(os.environ.get("MODEL_DOWNLOAD_GB", "20"))
-RESULTS = int(os.environ.get("RESULTS", "10"))
-FORGE_TEMPLATE_HASH = os.environ.get("FORGE_TEMPLATE_HASH", "")
-FORGE_DISK = os.environ.get("FORGE_DISK", "50")
-DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
+MODE = sys.argv[1]
+SESSION_HOURS = float(sys.argv[2])
+SESSION_MIN_TEST = float(sys.argv[3])
+DOWNLOAD_GB = float(sys.argv[4])
+RESULTS = int(sys.argv[5])
+FORGE_TEMPLATE_HASH = sys.argv[6]
+FORGE_DISK = sys.argv[7]
+DRY_RUN = sys.argv[8] == "1"
 
 SDXL_IMG_PER_H = {
     "RTX 5090":1200, "RTX 5080":850, "RTX 5070 Ti":700, "RTX 5070":580, "RTX 5060 Ti":420,
@@ -69,6 +67,10 @@ SDXL_IMG_PER_H = {
     "RTX A4500":360, "A10":380, "A10G":380, "RTX A4000":300, "RTX A3000":240, "Tesla V100 SXM2":320,
     "Tesla V100":280, "Tesla T4":180
 }
+
+GREEN_BG = "\033[42m"
+YELLOW_BG = "\033[43m"
+RESET = "\033[0m"
 
 def short_gpu(name, width=14):
     return name if len(name) <= width else name[:width-1] + "…"
@@ -86,7 +88,7 @@ def estimate_download_sec(size_gb, speed_mbps, files=60):
     return base * 1.4 + files * 0.08 + 8
 
 try:
-    data = json.loads(sys.stdin.read().strip() or "{}")
+    data = json.load(sys.stdin)
 except Exception:
     data = {}
 
@@ -101,9 +103,11 @@ for o in offers:
     dlspd = float(o.get("inet_down", 0) or 0)
     dlsec = estimate_download_sec(DOWNLOAD_GB, dlspd) if dlspd else None
     dl_cost = float(o.get("inet_down_cost", 0) or 0) * DOWNLOAD_GB
+
     session_h = SESSION_HOURS if MODE == "prod" else (SESSION_MIN_TEST / 60.0)
     total = dph * session_h + dl_cost
     img_h, _ = get_perf(raw, o.get("dlperf", 0))
+
     prod_score = (total / (img_h * SESSION_HOURS) * 100) if img_h > 0 else 999
     test_score = total + (dlsec / 60.0 if dlsec else 999)
     score = prod_score if MODE == "prod" else test_score
@@ -132,15 +136,18 @@ for o in offers:
 rows.sort(key=lambda x: x["score"])
 rows = rows[:RESULTS]
 
-header = "{:<3} {:<14} {:>6} {:>6} {:>7} {:>5} {:>8} {:>10} {:>6} {:>5} {:<16} {}".format("Nr", "GPU", "VRAM", "$/h", "Gesamt", "img/h", "Score", "DL", "Zeit", "Rel", "Ort", "ID")
+header = "{:<3} {:<14} {:>6} {:>6} {:>7} {:>5} {:>8} {:>10} {:>6} {:>5} {:<16} {}".format(
+    "Nr", "GPU", "VRAM", "$/h", "Gesamt", "img/h", "Score", "DL", "Zeit", "Rel", "Ort", "ID"
+)
 print(header)
 print("-" * 132)
+
 for i, r in enumerate(rows, 1):
     line = "{:<3} {:<14} {:>6} {:>6.3f} {:>7.4f} {:>5} {:>8.4f} {:>10} {:>6} {:>5.3f} {:<16} {}".format(
         i, r["gpu"], f'{r["vram"]:.1f}G', r["dph"], r["total"], r["img_h"], r["score"],
         f'{int(r["dlspd"])} MB/s' if r["dlspd"] else "?", r["dltxt"], r["rel"], r["loc"], r["id"]
     )
-    print(line)
+    print(f"{GREEN_BG}{line}{RESET}" if i == 1 and MODE == "prod" else f"{YELLOW_BG}{line}{RESET}" if i == 1 else line)
 
 if not rows:
     print("\nKeine passenden Angebote gefunden.")
@@ -189,7 +196,11 @@ try:
 except EOFError:
     confirm = ""
 if confirm == "j":
-    subprocess.run(["vastai", "create", "instance", picked["id"], "--template_hash", FORGE_TEMPLATE_HASH, "--disk", str(FORGE_DISK)], check=False)
+    subprocess.run([
+        "vastai", "create", "instance", picked["id"],
+        "--template_hash", FORGE_TEMPLATE_HASH,
+        "--disk", str(FORGE_DISK)
+    ], check=False)
 else:
     print("Abgebrochen.")
 PYEOF
