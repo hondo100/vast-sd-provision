@@ -3,7 +3,7 @@ sed -i 's/\r//' "$0"
 
 VASTAI_API_KEY="${VASTAI_API_KEY:-}"
 SESSION_HOURS=2
-MODEL_DOWNLOAD_GB=18
+MODEL_DOWNLOAD_GB=20
 MIN_VRAM_MB=24000
 MIN_RELIABILITY=0.98
 RESULTS=10
@@ -25,7 +25,6 @@ fi
 
 if [ -z "$VASTAI_API_KEY" ]; then
     echo "VASTAI_API_KEY nicht gesetzt."
-    echo "Optional: pass show vastai/api_key"
     exit 1
 fi
 
@@ -62,7 +61,7 @@ SDXL_IMG_PER_H = {
     "Tesla V100":280, "Tesla T4":180
 }
 
-def short_gpu(name, width=16):
+def short_gpu(name, width=14):
     return name if len(name) <= width else name[:width-1] + "…"
 
 def get_perf(name, dlperf):
@@ -70,6 +69,12 @@ def get_perf(name, dlperf):
         if k.lower() in name.lower():
             return v, "benchmark"
     return (round(dlperf * 10), "geschaetzt") if dlperf and dlperf > 0 else (200, "unbekannt")
+
+def estimate_download_sec(size_gb, speed_mbps, files=60):
+    if speed_mbps <= 0:
+        return None
+    base = (size_gb * 1024) / speed_mbps
+    return base * 1.4 + files * 0.08 + 8
 
 data = json.loads(RESPONSE)
 offers = data.get("offers", [])
@@ -80,16 +85,21 @@ for o in offers:
     gpu = short_gpu(raw)
     vram_gb = round(o.get("gpu_ram", 0) / 1024, 1)
     dph = o.get("dph_total", 0)
+
+    dlspd = o.get("inet_down", 0) or 0
+    dlsec = estimate_download_sec(DOWNLOAD_GB, float(dlspd)) if dlspd else None
     dl_cost = o.get("inet_down_cost", 0) * DOWNLOAD_GB
     total = dph * SESSION_H + dl_cost
-    dlspd = o.get("inet_down", 0) or 0
-    try:
-        dlmin = round((DOWNLOAD_GB * 1024) / float(dlspd) / 60, 1) if float(dlspd) > 0 else None
-    except:
-        dlmin = None
 
     img_h, src = get_perf(raw, o.get("dlperf", 0))
     cost_100 = (total / (img_h * SESSION_H) * 100) if img_h > 0 else 999
+
+    if dlsec is None:
+        dltxt = "?"
+    elif dlsec < 60:
+        dltxt = f"{int(round(dlsec))}s"
+    else:
+        dltxt = f"{round(dlsec/60,1)}m"
 
     results.append({
         "id": o.get("id", "?"),
@@ -100,21 +110,24 @@ for o in offers:
         "img_h": img_h,
         "cost_100": cost_100,
         "dlspd": dlspd,
-        "dlmin": dlmin,
+        "dltxt": dltxt,
         "rel": o.get("reliability", 0),
         "loc": o.get("geolocation", "?"),
         "src": src,
+        "dlsec": dlsec,
     })
 
 results.sort(key=lambda x: x["cost_100"])
 
-print(f"{'Rng':<3} {'GPU':<16} {'VRAM':>5} {'$/h':>6} {'Gesamt':>7} {'img/h':>5} {'$/100':>8} {'DL':>7} {'Zeit':>5} {'Rel':>5} {'Ort':<14} {'ID'}", file=sys.stderr)
-print("-" * 120, file=sys.stderr)
+fmt_header = "{:<3} {:<14} {:>6} {:>6} {:>7} {:>5} {:>8} {:>9} {:>7} {:>5} {:<16} {}"
+fmt_line   = "{:<3} {:<14} {:>6} {:>6.3f} {:>7.4f} {:>5} {:>8.4f} {:>9} {:>7} {:>5.3f} {:<16} {}"
+
+print(fmt_header.format("Rng", "GPU", "VRAM", "$/h", "Gesamt", "img/h", "$/100", "DL", "Zeit", "Rel", "Ort", "ID"), file=sys.stderr)
+print("-" * 132, file=sys.stderr)
 
 for i, r in enumerate(results[:TOP_N], 1):
-    dl = f"{int(r['dlspd'])} MB/s" if r['dlspd'] else "?"
-    tm = f"{r['dlmin']}m" if r['dlmin'] is not None else "?"
-    print(f"{i:<3} {r['gpu']:<16} {r['vram']:>5.1f}G {r['dph']:>6.3f} {r['total']:>7.4f} {r['img_h']:>5} {r['cost_100']:>8.4f} {dl:>7} {tm:>5} {r['rel']:>5.3f} {r['loc']:<14} {r['id']}", file=sys.stderr)
+    dl = f"{int(r['dlspd'])} MB/s" if r["dlspd"] else "?"
+    print(fmt_line.format(i, r["gpu"], f"{r['vram']:.1f}G", r["dph"], r["total"], r["img_h"], r["cost_100"], dl, r["dltxt"], r["rel"], r["loc"], r["id"]), file=sys.stderr)
 
 print(results[0]["id"])
 PYEOF
