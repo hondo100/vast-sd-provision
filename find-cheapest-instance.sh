@@ -1,14 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-SESSION_HOURS=2
-SESSION_MIN_TEST=15
-MODEL_DOWNLOAD_GB=20
-MIN_VRAM_GB=24
-MIN_RELIABILITY=0.98
+MODE="prod"
 RESULTS=10
 DRY_RUN=0
-MODE="prod"
 
 for arg in "$@"; do
   case "$arg" in
@@ -18,54 +13,70 @@ for arg in "$@"; do
   esac
 done
 
-OUT="$(vastai search offers 'gpu_ram>24 reliability>0.98 num_gpus=1 rented=False verified=True' 2>/dev/null || true)"
+RAW="$(vastai search offers 'gpu_ram>24 reliability>0.98 num_gpus=1 rented=False verified=True' 2>/dev/null || true)"
 
-python3 - "$MODE" "$SESSION_HOURS" "$SESSION_MIN_TEST" "$MODEL_DOWNLOAD_GB" "$RESULTS" "$DRY_RUN" <<'PY'
+python3 - "$MODE" "$RESULTS" "$DRY_RUN" <<'PY'
 import sys, re, subprocess
 
 MODE = sys.argv[1]
-SESSION_HOURS = float(sys.argv[2])
-SESSION_MIN_TEST = float(sys.argv[3])
-DOWNLOAD_GB = float(sys.argv[4])
-RESULTS = int(sys.argv[5])
-DRY_RUN = sys.argv[6] == "1"
+RESULTS = int(sys.argv[2])
+DRY_RUN = sys.argv[3] == "1"
 
-text = sys.stdin.read()
-lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+text = sys.stdin.read().splitlines()
 
 rows = []
-in_table = False
-for line in lines:
-    if line.startswith("  #  ID") or line.startswith("#  ID"):
-        in_table = True
+in_offers = False
+
+for line in text:
+    if line.strip().startswith("#  ID") or line.strip().startswith("  #  ID"):
+        in_offers = True
         continue
-    if in_table and line.startswith("  #  country"):
+    if in_offers and line.strip().startswith("#  country"):
         break
-    if not in_table:
+    if not in_offers:
         continue
-    m = re.match(r"\s*(\d+)\s+(\d+)\s+([0-9.]+)\s+1x\s+(\S+)\s+(.+?)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+(\d+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+(\S+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(\S+)$", line)
-    if not m:
+    if not line.strip():
         continue
-    idx, offer_id, cuda, model, pcie, cpu_ghz, vcpu, ram, vram, disk, price, dlp, dlpd, score, driver, net_up, net_down, rel, max_days, mach_id, status, host_id, ports = m.groups()
+
+    parts = line.split()
+    if len(parts) < 24:
+        continue
+
+    try:
+        idx = parts[0]
+        offer_id = parts[1]
+        cuda = parts[2]
+        model = parts[4]
+        price = float(parts[10])
+        dlp = float(parts[11])
+        score = float(parts[13])
+        rel = float(parts[17])
+        status = parts[20]
+        host_id = parts[21]
+        ports = parts[22]
+    except Exception:
+        continue
+
     rows.append({
         "offer_id": offer_id,
         "model": model,
-        "vram": float(vram),
-        "price": float(price),
-        "dlp": float(dlp),
-        "score": float(score),
-        "rel": float(rel),
+        "price": price,
+        "dlp": dlp,
+        "score": score,
+        "rel": rel,
         "status": status,
-        "ports": ports
+        "host_id": host_id,
+        "ports": ports,
     })
 
 if not rows:
     print("Keine Angebote geparst.")
     sys.exit(1)
 
-rows.sort(key=lambda x: (x["price"], -x["rel"], x["score"]))
+rows.sort(key=lambda r: (r["price"], -r["rel"], r["score"]))
+
 for i, r in enumerate(rows[:RESULTS], 1):
-    print(f"{i:2d} {r['offer_id']} {r['model']:<18} VRAM={r['vram']:.1f}GB $/h={r['price']:.4f} rel={r['rel']:.1f} score={r['score']:.1f}")
+    print(f"{i:2d} {r['offer_id']} {r['model']:<18} $/hr={r['price']:.4f} rel={r['rel']:.1f} score={r['score']:.1f} status={r['status']}")
 
 pick = rows[0]
 print()
@@ -75,4 +86,4 @@ if DRY_RUN:
     sys.exit(0)
 
 subprocess.run(["vastai", "create", "instance", pick["offer_id"]], check=False)
-PY
+PY <<<"$RAW"
