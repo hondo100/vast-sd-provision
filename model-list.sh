@@ -3,6 +3,26 @@
 echo -e "\033[1;34m[VAST][INFO]\033[0m  Loading model-list.sh v4"
 
 DOWNLOADS=(
+ # ── LoRAs ──────────────────────────────────────────────────────────────
+  # film_grain_cinematic: kein HF-Mirror verfügbar → Civitai
+  "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|film_grain_cinematic.safetensors|518040"
+
+  # detail_tweaker_xl: ✅ HF statt Civitai (135929) → ~100 MB/s statt ~53 MB/s
+  "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|detail_tweaker_xl.safetensors|https://huggingface.co/tyDiffusion/LoRAs/resolve/main/detail-tweaker-xl.safetensors"
+  # FALLBACK: "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|detail_tweaker_xl.safetensors|135929"
+
+  # real-vis-xl-enhancer: kein HF-Mirror → Civitai
+  "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|real-vis-xl-enhancer.safetensors|135010"
+
+  # perfect_eyes_xl: kein HF-Mirror → Civitai
+  "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|perfect_eyes_xl.safetensors|128461"
+
+  # skin_detail_xl: kein HF-Mirror → Civitai
+  "${WORKSPACE}/stable-diffusion-webui-forge/models/Lora|skin_detail_xl.safetensors|340833"
+
+  # ── Upscaler ───────────────────────────────────────────────────────────
+  "${WORKSPACE}/stable-diffusion-webui-forge/models/ESRGAN|4x-UltraSharp.pth|https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth"
+
   # ── Checkpoints ───────────────────────────────────────────────────────
   "${WORKSPACE}/stable-diffusion-webui-forge/models/Stable-diffusion|Juggernaut-XL-v9.safetensors|357609"
   "${WORKSPACE}/stable-diffusion-webui-forge/models/Stable-diffusion|svd_xt_1_1.safetensors|https://huggingface.co/thesudio/SVD1.1/resolve/main/svd_xt_1_1.safetensors"
