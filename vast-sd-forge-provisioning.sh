@@ -94,7 +94,7 @@ download_model() {
     step "Download $name"
     if [[ "$src" =~ ^[0-9]+$ ]]; then
         curl -L -H "User-Agent: Mozilla/5.0" \
-            "https://civitai.com/api/download/models/$src?token=$CIVITAI_API_KEY" \
+            "https://civitai.com/api/download/models/$src?token=$CIVITAI_TOKEN" \
             -o "$dest/$name"
     else
         aria2c -x16 -s16 --max-tries=3 "$src" -d "$dest" -o "$name"
