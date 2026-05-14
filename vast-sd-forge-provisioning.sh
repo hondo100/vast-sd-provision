@@ -71,7 +71,7 @@ section "FORGE NEO"
 
 # ── TOKENS ─────────────────────────────────────────────────────────────────
 [ -n "${GITHUB_PAT:-}" ] || fail "GITHUB_PAT fehlt"
-[ -n "${CIVITAI_API_KEY:-}" ] || fail "CIVITAI_API_KEY fehlt"
+[ -n "${CIVITAI_TOKEN:-}" ] || fail "CIVITAI_TOKEN fehlt"
 
 # ── MODEL-LIST ────────────────────────────────────────────────────────────
 section "MODELL-KONFIG"
