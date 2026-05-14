@@ -17,25 +17,15 @@ for arg in "$@"; do
 done
 
 echo "Pruefe Vast.ai Auth..."
-if ! vastai show api-keys >/tmp/vast_keys.out 2>/tmp/vast_keys.err; then
-  echo "VAST_KEY_FAIL"
-  cat /tmp/vast_keys.err
-  exit 1
-fi
-
-if ! vastai show user >/tmp/vast_user.out 2>/tmp/vast_user.err; then
-  echo "VAST_USER_FAIL"
-  cat /tmp/vast_user.err
-  exit 1
-fi
-
+vastai show api-keys >/dev/null
+vastai show user >/dev/null
 echo "VAST_AUTH_OK"
 echo
 
-RAW="$(vastai search offers 'gpu_ram>24 reliability>0.98 num_gpus=1 rented=False verified=True' 2>/dev/null || true)"
+RAW="$(vastai search offers 'gpu_ram > 24 reliability > 0.98 num_gpus == 1 rented == False verified == True' --raw)"
 
 python3 - "$MODE" "$SESSION_HOURS" "$SESSION_MIN_TEST" "$MODEL_DOWNLOAD_GB" "$RESULTS" "$DRY_RUN" <<'PY'
-import sys, subprocess
+import sys, json, subprocess
 
 MODE = sys.argv[1]
 SESSION_HOURS = float(sys.argv[2])
@@ -44,62 +34,54 @@ DOWNLOAD_GB = float(sys.argv[4])
 RESULTS = int(sys.argv[5])
 DRY_RUN = sys.argv[6] == "1"
 
-text = sys.stdin.read().splitlines()
-rows = []
-in_offers = False
+raw = sys.stdin.read().strip()
+if not raw:
+    print("Keine Daten empfangen.")
+    sys.exit(1)
 
-for line in text:
-    s = line.strip()
-    if s.startswith("#  ID") or s.startswith("ID") or s.startswith("  #  ID"):
-        in_offers = True
-        continue
-    if in_offers and s.startswith("#  country"):
-        break
-    if not in_offers or not s:
-        continue
+data = json.loads(raw)
+rows = data if isinstance(data, list) else data.get("offers", data.get("results", []))
 
-    parts = s.split()
-    if len(parts) < 23:
-        continue
+if not rows:
+    print("Keine Angebote gefunden.")
+    sys.exit(1)
 
+def get(r, *keys, default=None):
+    for k in keys:
+        if k in r:
+            return r[k]
+    return default
+
+parsed = []
+for r in rows:
     try:
-        offer_id = parts[1]
-        model = parts[4]
-        price = float(parts[10])
-        dlp = float(parts[11])
-        dlp_usd = float(parts[12])
-        score = float(parts[13])
-        rel = float(parts[17])
-        status = parts[20]
-        host_id = parts[21]
-        ports = parts[22]
-        rows.append({
-            "offer_id": offer_id,
-            "model": model,
-            "price": price,
-            "dlp": dlp,
-            "dlp_usd": dlp_usd,
-            "score": score,
-            "rel": rel,
-            "status": status,
-            "host_id": host_id,
-            "ports": ports,
+        parsed.append({
+            "offer_id": str(get(r, "id", "offer_id")),
+            "model": str(get(r, "machine_name", "model", "gpu_name", default="unknown")),
+            "price": float(get(r, "dph_total", "price", default=9999)),
+            "dlp": float(get(r, "dlperf", "dlp", default=0)),
+            "dlp_usd": float(get(r, "dlperf_usd", "dlp_usd", default=0)),
+            "score": float(get(r, "score", default=0)),
+            "rel": float(get(r, "reliability", "rel", default=0)),
+            "status": str(get(r, "status", default="")),
+            "host_id": str(get(r, "host_id", default="")),
+            "ports": str(get(r, "direct_port_count", "ports", default="")),
         })
     except Exception:
         continue
 
-if not rows:
-    print("Keine Angebote geparst.")
+if not parsed:
+    print("Keine Angebote konnten geparst werden.")
     sys.exit(1)
 
-rows.sort(key=lambda r: (r["price"], -r["rel"], r["score"]))
+parsed.sort(key=lambda r: (r["price"], -r["rel"], r["score"]))
 
 print("Nr  Offer_ID    Model               $/hr     DLP    DLP/$   Score   Rel    Status")
 print("-" * 80)
-for i, r in enumerate(rows[:RESULTS], 1):
-    print(f"{i:2d}  {r['offer_id']:<10} {r['model']:<18} {r['price']:>6.4f}  {r['dlp']:>6.1f}  {r['dlp_usd']:>6.2f}  {r['score']:>6.1f}  {r['rel']:>5.1f}  {r['status']}")
+for i, r in enumerate(parsed[:RESULTS], 1):
+    print(f"{i:2d}  {r['offer_id']:<10} {r['model']:<18} {r['price']:>6.4f}  {r['dlp']:>6.1f}  {r['dlp_usd']:>6.2f}  {r['score']:>6.1f}  {r['rel']:>5.2f}  {r['status']}")
 
-pick = rows[0]
+pick = parsed[0]
 print()
 print(f"Auswahl: {pick['offer_id']} ({pick['model']})")
 print(f"Befehl: vastai create instance {pick['offer_id']}")
@@ -107,5 +89,5 @@ print(f"Befehl: vastai create instance {pick['offer_id']}")
 if DRY_RUN:
     sys.exit(0)
 
-subprocess.run(["vastai", "create", "instance", pick["offer_id"]], check=False)
+subprocess.run(["vastai", "create", "instance", pick["offer_id"]], check=True)
 PY <<<"$RAW"
