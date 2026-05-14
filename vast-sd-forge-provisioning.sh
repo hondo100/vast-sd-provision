@@ -5,7 +5,6 @@ set -euo pipefail
 # VAST.AI PROVISIONING SCRIPT – SD-Forge Template
 # - Läuft in Phase 9, VOR dem Forge-Start
 # - Kein Forge-Clone (Template managed das)
-# - Kein aria2c, kein WORKSPACE-Detection
 # - WORKSPACE ist immer /workspace (gesetzt vom Template)
 # ==============================================================================
 
@@ -13,11 +12,10 @@ LOG_FILE="/workspace/vast-sd-forge-provisioning.log"
 mkdir -p /workspace
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-# ── Log-Funktionen ─────────────────────────────────────────────────────────
 VAST_INFO()    { echo -e "\033[1;34m[VAST][INFO]\033[0m  [$(date '+%H:%M:%S')] $*"; }
 VAST_OK()      { echo -e "\033[1;32m[VAST][OK]\033[0m    [$(date '+%H:%M:%S')] $*"; }
 VAST_WARN()    { echo -e "\033[1;33m[VAST][WARN]\033[0m  [$(date '+%H:%M:%S')] $*"; }
-VAST_ERROR()   { echo -e "\033[1;31m[VAST][ERROR]\033[0m [$(date '+%H:%M:%S')] $*"; }
+VAST_ERROR()   { echo -e "\033[1;31m[VAST][ERROR]\033[0m [$(date '+%H:%M:%S')] $*" >&2; }
 VAST_STEP()    { echo -e "\033[1;36m[VAST][STEP $1]\033[0m [$(date '+%H:%M:%S')] ${*:2}"; }
 VAST_SECTION() {
   echo ""
@@ -72,12 +70,12 @@ source "$TMP_MODEL_LIST"
 rm -f "$TMP_MODEL_LIST"
 VAST_OK "model-list.sh geladen: ${#DOWNLOADS[@]} Downloads, ${#EXTENSIONS[@]} Extensions"
 
+# ── Download-Funktionen ────────────────────────────────────────────────────
 download_civitai() {
   local dest="$1" name="$2" id="$3"
   mkdir -p "$dest"
   if [[ -f "$dest/$name" && $(stat -c%s "$dest/$name" 2>/dev/null || echo 0) -gt 1048576 ]]; then
-    VAST_INFO "SKIP (bereits vorhanden): $name"
-    return 0
+    VAST_INFO "SKIP (bereits vorhanden): $name"; return 0
   fi
   VAST_INFO "Civitai: $name (id=$id)"
   curl -fL --retry 3 \
@@ -91,8 +89,7 @@ download_url() {
   local dest="$1" name="$2" url="$3"
   mkdir -p "$dest"
   if [[ -f "$dest/$name" && $(stat -c%s "$dest/$name" 2>/dev/null || echo 0) -gt 1048576 ]]; then
-    VAST_INFO "SKIP (bereits vorhanden): $name"
-    return 0
+    VAST_INFO "SKIP (bereits vorhanden): $name"; return 0
   fi
   VAST_INFO "URL: $name"
   curl -fL --retry 3 -o "$dest/$name" "$url"
@@ -103,12 +100,10 @@ download_hf_gated() {
   local dest="$1" name="$2" path="$3"
   mkdir -p "$dest"
   if [[ -f "$dest/$name" && $(stat -c%s "$dest/$name" 2>/dev/null || echo 0) -gt 1048576 ]]; then
-    VAST_INFO "SKIP (bereits vorhanden): $name"
-    return 0
+    VAST_INFO "SKIP (bereits vorhanden): $name"; return 0
   fi
   if [[ -z "${HF_TOKEN:-}" ]]; then
-    VAST_WARN "HF_TOKEN fehlt – überspringe: $name"
-    return 1
+    VAST_WARN "HF_TOKEN fehlt – überspringe: $name"; return 1
   fi
   VAST_INFO "HF Gated: $name"
   curl -fL --retry 3 \
@@ -118,6 +113,24 @@ download_hf_gated() {
   VAST_OK "$name fertig ($(du -sh "$dest/$name" | cut -f1))"
 }
 
+download_optional() {
+  local dest="$1" name="$2" url="$3"
+  mkdir -p "$dest"
+  if [[ -f "$dest/$name" ]]; then
+    VAST_INFO "SKIP (bereits vorhanden): $name"; return 0
+  fi
+  VAST_INFO "Optional: $name"
+  local http_code
+  http_code=$(curl -fsSL --retry 2 -o "$dest/$name" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  if [[ "$http_code" == "200" ]]; then
+    VAST_OK "$name geladen"
+  else
+    rm -f "$dest/$name"
+    VAST_WARN "Nicht gefunden (HTTP $http_code) – übersprungen: $name"
+  fi
+}
+
+# ── Downloads ─────────────────────────────────────────────────────────────
 VAST_SECTION "MODELL-DOWNLOADS (${#DOWNLOADS[@]} Einträge)"
 COUNT=0
 for entry in "${DOWNLOADS[@]}"; do
@@ -126,21 +139,18 @@ for entry in "${DOWNLOADS[@]}"; do
   VAST_INFO "[$COUNT/${#DOWNLOADS[@]}] $name"
   case "$src" in
     HF_GATED:*)
-      download_hf_gated "$dest" "$name" "${src#HF_GATED:}" || VAST_WARN "Fehlgeschlagen: $name"
-      ;;
+      download_hf_gated "$dest" "$name" "${src#HF_GATED:}" || VAST_WARN "Fehlgeschlagen: $name" ;;
     http://*|https://*)
-      download_url "$dest" "$name" "$src" || VAST_WARN "Fehlgeschlagen: $name"
-      ;;
+      download_url "$dest" "$name" "$src" || VAST_WARN "Fehlgeschlagen: $name" ;;
     [0-9]*)
-      download_civitai "$dest" "$name" "$src" || VAST_WARN "Fehlgeschlagen: $name"
-      ;;
+      download_civitai "$dest" "$name" "$src" || VAST_WARN "Fehlgeschlagen: $name" ;;
     *)
-      VAST_WARN "Unbekanntes Format: $name ($src)"
-      ;;
+      VAST_WARN "Unbekanntes Format: $name ($src)" ;;
   esac
 done
 VAST_OK "Alle Downloads abgeschlossen"
 
+# ── Extensions ────────────────────────────────────────────────────────────
 if declare -p EXTENSIONS >/dev/null 2>&1 && [[ ${#EXTENSIONS[@]} -gt 0 ]]; then
   VAST_SECTION "EXTENSIONS (${#EXTENSIONS[@]} Einträge)"
   EXT_DIR="$WORKSPACE/stable-diffusion-webui-forge/extensions"
@@ -157,6 +167,17 @@ if declare -p EXTENSIONS >/dev/null 2>&1 && [[ ${#EXTENSIONS[@]} -gt 0 ]]; then
   done
 fi
 
+# ── Optionale Configs ──────────────────────────────────────────────────────
+if declare -p OPTIONAL_CONFIGS >/dev/null 2>&1 && [[ ${#OPTIONAL_CONFIGS[@]} -gt 0 ]]; then
+  VAST_SECTION "OPTIONALE CONFIGS (${#OPTIONAL_CONFIGS[@]} Einträge)"
+  for entry in "${OPTIONAL_CONFIGS[@]}"; do
+    IFS='|' read -r dest name url <<< "$entry"
+    download_optional "$dest" "$name" "$url" || true
+  done
+  VAST_OK "Config-Block abgeschlossen"
+fi
+
+# ── Abschluss ──────────────────────────────────────────────────────────────
 VAST_SECTION "PROVISIONING ABGESCHLOSSEN"
 echo "$(date -Is)" > "$SENTINEL"
 VAST_OK "Sentinel: $SENTINEL"
