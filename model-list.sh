@@ -27,4 +27,9 @@ EXTENSIONS=(
   "https://github.com/Mikubill/sd-webui-controlnet"
 )
 
+OPTIONAL_CONFIGS=(
+  "${WORKSPACE}/stable-diffusion-webui-forge|ui-config.json|https://raw.githubusercontent.com/hondo100/vast-sd-provision/refs/heads/main/configs/ui-config.json"
+  "${WORKSPACE}/stable-diffusion-webui-forge|config.json|https://raw.githubusercontent.com/hondo100/vast-sd-provision/refs/heads/main/configs/config.json"
+)
+
 echo -e "\033[1;32m[VAST][OK]\033[0m    model-list.sh geladen: ${#DOWNLOADS[@]} Downloads, ${#EXTENSIONS[@]} Extensions"
