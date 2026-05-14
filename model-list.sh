@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo -e "\033[1;34m[VAST][INFO]\033[0m Loading modell-list.sh"
+echo -e "\033[1;34m[VAST][INFO]\033[0m Loading model-list.sh"
 
 DOWNLOADS=(
   "${WORKSPACE}/stable-diffusion-webui-forge/models/Stable-diffusion|Juggernaut-XL-v9.safetensors|357609"
