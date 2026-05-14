@@ -45,7 +45,7 @@ EXTENSIONS=(
 
   # ✅ NEU: WD14 Tagger + CLIP Interrogator (Bild → Text)
   # Analysiert ein Bild und gibt Tags/Prompt zurück → Basis für Neugenerierung
-  "https://github.com/toriato/stable-diffusion-webui-wd14-tagger"
+  # "https://github.com/toriato/stable-diffusion-webui-wd14-tagger"
 
   # ✅ NEU: CLIP Interrogator – natürlichsprachliche Bildbeschreibung (kein Booru-Style)
   # Ideal für realistische Bilder und SDXL-Prompts
