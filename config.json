@@ -1,0 +1,14 @@
+{
+  "sd_model_checkpoint": "Juggernaut-XL-v9.safetensors",
+  "sd_vae": "Automatic",
+  "CLIP_stop_at_last_layers": 2,
+  "ui_tab_order": [
+    "txt2img",
+    "img2img",
+    "Extras",
+    "PNG Info",
+    "Checkpoint Merger",
+    "Settings",
+    "Extensions"
+  ]
+}
