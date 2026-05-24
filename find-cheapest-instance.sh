@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_VERSION="2026-05-24.4"
+SCRIPT_VERSION="2026-05-24.5"
 
 if [[ "${1:-}" == "--version" ]]; then
   echo "$SCRIPT_VERSION"
@@ -13,6 +13,9 @@ RESULTS=10
 DRY_RUN=0
 MODE="prod"
 CONFIRM=0
+MODEL_GB=20.0
+MIN_GPU_RAM=16.0
+MIN_RELIABILITY=0.95
 
 for arg in "$@"; do
   case "$arg" in
@@ -32,8 +35,10 @@ C_RED=$'\033[1;31m'
 C_GREEN=$'\033[1;32m'
 C_YELLOW=$'\033[1;33m'
 C_BLUE=$'\033[1;34m'
+C_CYAN=$'\033[1;36m'
+C_DIM=$'\033[2m'
 
-info(){ echo -e "${C_BLUE}[INFO]${C_RESET} $*"; }
+info(){ echo -e "${C_CYAN}[INFO]${C_RESET} $*"; }
 ok(){ echo -e "${C_GREEN}[OK]${C_RESET} $*"; }
 warn(){ echo -e "${C_YELLOW}[WARN]${C_RESET} $*"; }
 err(){ echo -e "${C_RED}[ERR]${C_RESET} $*" >&2; }
@@ -64,11 +69,10 @@ esac
 info "Suche Angebote..."
 RAW_FILE="$(mktemp)"
 trap 'rm -f "$RAW_FILE"' EXIT
-
 vastai search offers "$QUERY" --raw -o 'dlperf_usd-' > "$RAW_FILE"
 
-python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$CONFIRM" "$TEMPLATE_HASH" "$RAW_FILE" <<'PY'
-import sys, json, subprocess
+python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$CONFIRM" "$TEMPLATE_HASH" "$RAW_FILE" "$MODEL_GB" "$MIN_GPU_RAM" "$MIN_RELIABILITY" <<'PY'
+import sys, json, subprocess, math
 
 MODE = sys.argv[1]
 RESULTS = int(sys.argv[2])
@@ -76,6 +80,9 @@ DRY_RUN = sys.argv[3] == '1'
 CONFIRM = sys.argv[4] == '1'
 TEMPLATE_HASH = sys.argv[5]
 RAW_FILE = sys.argv[6]
+MODEL_GB = float(sys.argv[7])
+MIN_GPU_RAM = float(sys.argv[8])
+MIN_RELIABILITY = float(sys.argv[9])
 
 with open(RAW_FILE, 'r', encoding='utf-8') as f:
     raw = f.read().strip()
@@ -113,23 +120,40 @@ for r in rows:
         if not offer_id:
             continue
         model = str(r.get("gpu_name") or r.get("machine_name") or r.get("model") or "unknown")
+        gpu_ram = float(r.get("gpu_ram") or r.get("gpu_total_ram") or 0)
         price = float(r.get("dph_total") or r.get("price") or 0)
-        dlp = float(r.get("dlperf") or 0)
-        dlp_usd = float(r.get("dlperf_per_dphtotal") or 0)
-        if not dlp_usd and price > 0:
-            dlp_usd = dlp / price
-        rel = float(r.get("reliability") or r.get("expected_reliability") or r.get("rel") or 0)
-        score = r.get("score", "")
-        status = str(r.get("rentable") if r.get("rentable") is not None else r.get("status") or "")
+        dlperf = float(r.get("dlperf") or 0)
+        dlperf_ratio = float(r.get("dlperf_per_dphtotal") or 0)
+        if not dlperf_ratio and price > 0:
+            dlperf_ratio = dlperf / price
+        reliability = float(r.get("reliability") or r.get("expected_reliability") or 0)
+        inet_down_cost = float(r.get("inet_down_cost") or 0)
+        transfer_cost = MODEL_GB * inet_down_cost
+        effective_cost = price + transfer_cost
+
+        vram_factor = 1.0
+        if gpu_ram >= 48:
+            vram_factor = 1.4
+        elif gpu_ram >= 24:
+            vram_factor = 1.2
+        elif gpu_ram < MIN_GPU_RAM:
+            vram_factor = 0.7
+
+        genai_score = (dlperf * vram_factor) / effective_cost if effective_cost > 0 else 0.0
         parsed.append({
             "offer_id": offer_id,
             "model": model,
+            "gpu_ram": gpu_ram,
             "price": price,
-            "dlp": dlp,
-            "dlperf_usd": dlp_usd,
-            "rel": rel,
-            "score": score,
-            "status": status,
+            "dlperf": dlperf,
+            "dlperf_ratio": dlperf_ratio,
+            "reliability": reliability,
+            "inet_down_cost": inet_down_cost,
+            "transfer_cost": transfer_cost,
+            "effective_cost": effective_cost,
+            "vram_factor": vram_factor,
+            "genai_score": genai_score,
+            "status": str(r.get("rentable") if r.get("rentable") is not None else r.get("status") or ""),
         })
     except Exception:
         continue
@@ -138,14 +162,48 @@ if not parsed:
     print("Keine Angebote konnten geparst werden.")
     sys.exit(1)
 
-parsed.sort(key=lambda r: (-r["dlperf_usd"], -r["rel"], r["price"]))
+best_score = max(parsed, key=lambda r: r["genai_score"])["genai_score"]
+best_cost = min(parsed, key=lambda r: r["effective_cost"])["effective_cost"]
+
+for r in parsed:
+    if r["reliability"] < MIN_RELIABILITY or r["gpu_ram"] < MIN_GPU_RAM:
+        r["color"] = "red"
+    elif r["genai_score"] >= best_score:
+        r["color"] = "green"
+    elif r["effective_cost"] <= best_cost:
+        r["color"] = "blue"
+    else:
+        r["color"] = "yellow"
+
+parsed.sort(key=lambda r: (-r["genai_score"], -r["reliability"], r["effective_cost"]))
+
+colors = {
+    "red": "\033[1;31m",
+    "green": "\033[1;32m",
+    "yellow": "\033[1;33m",
+    "blue": "\033[1;34m",
+    "dim": "\033[2m",
+    "reset": "\033[0m",
+}
 
 print(f"Modus: {MODE}")
-print("Nr  Offer_ID    Model               $/hr     DLP    DLP/$   Rel    Score  Status")
-print("-" * 82)
+print(f"{colors['dim']}Legende:{colors['reset']}")
+print(f"  {colors['green']}Grün{colors['reset']}  = bester GenAI-Score")
+print(f"  {colors['yellow']}Gelb{colors['reset']}  = gute Balance aus Preis und Leistung")
+print(f"  {colors['blue']}Blau{colors['reset']}  = günstigste effektive Kosten")
+print(f"  {colors['red']}Rot{colors['reset']}   = unter Mindestanforderungen")
+print()
+
+print("Nr  Offer_ID    Model               $/hr   20GB Tx   Eff$/h  DLPerf  Score  VRAM  Rel  Status")
+print("-" * 104)
 for i, r in enumerate(parsed[:RESULTS], 1):
-    mark = ">>" if i == 1 else "  "
-    print(f"{mark} {i:2d}  {r['offer_id']:<10} {r['model']:<18} {r['price']:>6.4f}  {r['dlp']:>6.1f}  {r['dlperf_usd']:>6.2f}  {r['rel']:>5.2f}  {str(r['score'])[:6]:>6}  {r['status']}")
+    c = colors[r["color"]]
+    reset = colors["reset"]
+    print(
+        f"{c}{i:2d}  {r['offer_id']:<10} {r['model']:<18} "
+        f"{r['price']:>6.4f}  {r['transfer_cost']:>7.4f}  {r['effective_cost']:>6.4f}  "
+        f"{r['dlperf']:>6.1f}  {r['genai_score']:>6.1f}  {r['gpu_ram']:>4.0f}  {r['reliability']:>4.2f}  {r['status']}{reset}"
+    )
 
 pick = parsed[0]
 print()
