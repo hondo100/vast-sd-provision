@@ -56,7 +56,7 @@ esac
 info "Suche Angebote..."
 RAW="$(vastai search offers "$QUERY" --raw -o 'dlperf_usd-')"
 
-python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$CONFIRM" "$TEMPLATE_HASH" <<'PY' <<<"$RAW"
+printf '%s' "$RAW" | python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$CONFIRM" "$TEMPLATE_HASH" <<'PY'
 import sys, json, subprocess
 
 MODE = sys.argv[1]
@@ -64,27 +64,29 @@ RESULTS = int(sys.argv[2])
 DRY_RUN = sys.argv[3] == '1'
 CONFIRM = sys.argv[4] == '1'
 TEMPLATE_HASH = sys.argv[5]
-raw = sys.stdin.read().strip()
 
+raw = sys.stdin.read().strip()
 if not raw:
     print("Keine Daten empfangen.")
     sys.exit(1)
 
-def extract_rows(payload):
-    try:
-        data = json.loads(payload)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            for key in ("offers", "results", "data"):
-                val = data.get(key)
-                if isinstance(val, list):
-                    return val
-    except Exception:
-        pass
+try:
+    data = json.loads(raw)
+except Exception as e:
+    print(f"JSON-Parse-Fehler: {e}")
+    sys.exit(1)
+
+def extract_rows(obj):
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict):
+        for key in ("offers", "results", "data"):
+            val = obj.get(key)
+            if isinstance(val, list):
+                return val
     return []
 
-rows = extract_rows(raw)
+rows = extract_rows(data)
 if not rows:
     print("Keine Angebote gefunden.")
     sys.exit(1)
@@ -93,6 +95,8 @@ parsed = []
 for r in rows:
     try:
         offer_id = str(r.get("id") or r.get("offer_id") or "")
+        if not offer_id:
+            continue
         model = str(r.get("machine_name") or r.get("gpu_name") or r.get("model") or "unknown")
         price = float(r.get("dph_total") or r.get("price") or 9999)
         dlp = float(r.get("dlperf") or r.get("dlp") or 0)
