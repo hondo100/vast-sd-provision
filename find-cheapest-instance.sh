@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_VERSION="2026-05-24.2"
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "$SCRIPT_VERSION"
+  exit 0
+fi
+
 TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
 RESULTS=10
 DRY_RUN=0
@@ -31,6 +38,7 @@ ok(){ echo -e "${C_GREEN}[OK]${C_RESET} $*"; }
 warn(){ echo -e "${C_YELLOW}[WARN]${C_RESET} $*"; }
 err(){ echo -e "${C_RED}[ERR]${C_RESET} $*" >&2; }
 
+echo "Skript-Version: ${SCRIPT_VERSION}"
 echo "Pruefe Vast.ai Auth..."
 if ! vastai show api-keys >/dev/null 2>&1; then
   err "VAST_KEY_FAIL"
