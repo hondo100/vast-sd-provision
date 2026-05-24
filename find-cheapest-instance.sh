@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.15"
+VERSION="2026-05-24.16"
 RESULTS=10
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
-QUERY='verified=true rentable=true'
+QUERY='external=false rentable=true verified=true'
 SORT='dlperf_usd-'
 
 usage() {
@@ -55,41 +55,68 @@ score_offer() {
 parse_cli() {
   python3 - "$RESULTS" <<'PY'
 import sys, re
+
 results = int(sys.argv[1])
 text = sys.stdin.read().splitlines()
+
 rows = []
 in_table = False
+
+pattern = re.compile(
+    r'^\s*(\d+)\s+'          # row number
+    r'(\d+)\s+'              # offer id
+    r'([0-9.]+)\s+'          # CUDA
+    r'(\d+x)\s+'             # N
+    r'([A-Za-z0-9_]+)\s+'    # Model
+    r'([0-9.]+)\s+'          # PCIE
+    r'([0-9.]+)\s+'          # cpu_ghz
+    r'([0-9.]+)\s+'          # vCPUs
+    r'([0-9.]+)\s+'          # RAM
+    r'([0-9.]+)\s+'          # VRAM
+    r'([0-9.]+)\s+'          # Disk
+    r'([0-9.]+)\s+'          # $/hr
+    r'([0-9.]+)\s+'          # DLP
+    r'([0-9.]+)\s+'          # DLP/$
+    r'([0-9.]+)\s*$'         # score
+)
+
 for line in text:
     s = line.rstrip()
+
     if not s.strip():
         if in_table and rows:
             break
         continue
+
     if s.lstrip().startswith('#  ID') and 'Model' in s and '$/hr' in s:
         in_table = True
         continue
+
     if not in_table:
         continue
-    if not re.match(r'^\s*\d+\s+', s):
+
+    m = pattern.match(s)
+    if not m:
         continue
-    parts = re.split(r'\s{2,}', s.strip())
-    if len(parts) < 14:
-        continue
-    try:
-        oid = parts[1]
-        model = parts[4].replace('_', ' ')
-        price = float(parts[10])
-        dlp = float(parts[11])
-        score = float(parts[13])
-        vram = float(parts[8])
-    except Exception:
-        continue
+
+    rowno, oid, cuda, n, model, pcie, cpu, vcpus, ram, vram, disk, price, dlp, dlp_per_dollar, score = m.groups()
+
+    model = model.replace('_', ' ')
+    price = float(price)
+    dlp = float(dlp)
+    vram = float(vram)
+    score = float(score)
+
     rel = 1.00
     tx = 0.0000
     eff = price
-    rows.append((oid, model, price, tx, eff, dlp, rel, vram, 'True', score))
+    status = "True"
+
+    rows.append((oid, model, price, tx, eff, dlp, rel, vram, status, score))
+
     if len(rows) >= results:
         break
+
 for r in rows:
     print("\t".join(map(str, r)))
 PY
