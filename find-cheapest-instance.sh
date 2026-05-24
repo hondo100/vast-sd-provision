@@ -54,9 +54,12 @@ case "$MODE" in
 esac
 
 info "Suche Angebote..."
-RAW="$(vastai search offers "$QUERY" --raw -o 'dlperf_usd-')"
+RAW_FILE="$(mktemp)"
+trap 'rm -f "$RAW_FILE"' EXIT
 
-printf '%s' "$RAW" | python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$CONFIRM" "$TEMPLATE_HASH" <<'PY'
+vastai search offers "$QUERY" --raw -o 'dlperf_usd-' > "$RAW_FILE"
+
+python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$CONFIRM" "$TEMPLATE_HASH" "$RAW_FILE" <<'PY'
 import sys, json, subprocess
 
 MODE = sys.argv[1]
@@ -64,8 +67,11 @@ RESULTS = int(sys.argv[2])
 DRY_RUN = sys.argv[3] == '1'
 CONFIRM = sys.argv[4] == '1'
 TEMPLATE_HASH = sys.argv[5]
+RAW_FILE = sys.argv[6]
 
-raw = sys.stdin.read().strip()
+with open(RAW_FILE, 'r', encoding='utf-8') as f:
+    raw = f.read().strip()
+
 if not raw:
     print("Keine Daten empfangen.")
     sys.exit(1)
@@ -74,6 +80,7 @@ try:
     data = json.loads(raw)
 except Exception as e:
     print(f"JSON-Parse-Fehler: {e}")
+    print(raw[:1000])
     sys.exit(1)
 
 def extract_rows(obj):
