@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.14"
+VERSION="2026-05-24.15"
 RESULTS=10
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
@@ -53,24 +53,46 @@ score_offer() {
 }
 
 parse_cli() {
-  awk -v results="$RESULTS" '
-    BEGIN { in=0; count=0 }
-    /^  #  ID[[:space:]]+CUDA[[:space:]]+N[[:space:]]+Model/ { in=1; next }
-    in && NF==0 { exit }
-    in && $1 ~ /^[0-9]+$/ {
-      id=$2; model=$5; vram=$9; price=$11; dlp=$12; score=$14
-      gsub(/_/, " ", model)
-      if (vram ~ /^[0-9.]+$/ && price ~ /^[0-9.]+$/) {
-        rel=1.00
-        eff=price
-        if (dlp !~ /^[0-9.]+$/) dlp=0
-        if (score !~ /^-?[0-9.]+$/) score=0
-        print id "\t" model "\t" price "\t0.0000\t" eff "\t" dlp "\t" rel "\t" vram "\tTrue\t" score
-        count++
-        if (count>=results) exit
-      }
-    }
-  '
+  python3 - "$RESULTS" <<'PY'
+import sys, re
+results = int(sys.argv[1])
+text = sys.stdin.read().splitlines()
+rows = []
+in_table = False
+for line in text:
+    s = line.rstrip()
+    if not s.strip():
+        if in_table and rows:
+            break
+        continue
+    if s.lstrip().startswith('#  ID') and 'Model' in s and '$/hr' in s:
+        in_table = True
+        continue
+    if not in_table:
+        continue
+    if not re.match(r'^\s*\d+\s+', s):
+        continue
+    parts = re.split(r'\s{2,}', s.strip())
+    if len(parts) < 14:
+        continue
+    try:
+        oid = parts[1]
+        model = parts[4].replace('_', ' ')
+        price = float(parts[10])
+        dlp = float(parts[11])
+        score = float(parts[13])
+        vram = float(parts[8])
+    except Exception:
+        continue
+    rel = 1.00
+    tx = 0.0000
+    eff = price
+    rows.append((oid, model, price, tx, eff, dlp, rel, vram, 'True', score))
+    if len(rows) >= results:
+        break
+for r in rows:
+    print("\t".join(map(str, r)))
+PY
 }
 
 main() {
