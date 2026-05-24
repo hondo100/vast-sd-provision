@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_VERSION="2026-05-24.2"
+SCRIPT_VERSION="2026-05-24.4"
 
 if [[ "${1:-}" == "--version" ]]; then
   echo "$SCRIPT_VERSION"
@@ -112,12 +112,15 @@ for r in rows:
         offer_id = str(r.get("id") or r.get("offer_id") or "")
         if not offer_id:
             continue
-        model = str(r.get("machine_name") or r.get("gpu_name") or r.get("model") or "unknown")
-        price = float(r.get("dph_total") or r.get("price") or 9999)
-        dlp = float(r.get("dlperf") or r.get("dlp") or 0)
-        dlp_usd = float(r.get("dlperf_usd") or r.get("dlp_usd") or 0)
-        rel = float(r.get("reliability") or r.get("rel") or 0)
-        status = str(r.get("status") or "")
+        model = str(r.get("gpu_name") or r.get("machine_name") or r.get("model") or "unknown")
+        price = float(r.get("dph_total") or r.get("price") or 0)
+        dlp = float(r.get("dlperf") or 0)
+        dlp_usd = float(r.get("dlperf_per_dphtotal") or 0)
+        if not dlp_usd and price > 0:
+            dlp_usd = dlp / price
+        rel = float(r.get("reliability") or r.get("expected_reliability") or r.get("rel") or 0)
+        score = r.get("score", "")
+        status = str(r.get("rentable") if r.get("rentable") is not None else r.get("status") or "")
         parsed.append({
             "offer_id": offer_id,
             "model": model,
@@ -125,6 +128,7 @@ for r in rows:
             "dlp": dlp,
             "dlperf_usd": dlp_usd,
             "rel": rel,
+            "score": score,
             "status": status,
         })
     except Exception:
@@ -137,11 +141,11 @@ if not parsed:
 parsed.sort(key=lambda r: (-r["dlperf_usd"], -r["rel"], r["price"]))
 
 print(f"Modus: {MODE}")
-print("Nr  Offer_ID    Model               $/hr     DLP    DLP/$   Rel    Status")
-print("-" * 74)
+print("Nr  Offer_ID    Model               $/hr     DLP    DLP/$   Rel    Score  Status")
+print("-" * 82)
 for i, r in enumerate(parsed[:RESULTS], 1):
     mark = ">>" if i == 1 else "  "
-    print(f"{mark} {i:2d}  {r['offer_id']:<10} {r['model']:<18} {r['price']:>6.4f}  {r['dlp']:>6.1f}  {r['dlperf_usd']:>6.2f}  {r['rel']:>5.2f}  {r['status']}")
+    print(f"{mark} {i:2d}  {r['offer_id']:<10} {r['model']:<18} {r['price']:>6.4f}  {r['dlp']:>6.1f}  {r['dlperf_usd']:>6.2f}  {r['rel']:>5.2f}  {str(r['score'])[:6]:>6}  {r['status']}")
 
 pick = parsed[0]
 print()
