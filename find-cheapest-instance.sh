@@ -101,7 +101,6 @@ for r in rows:
         price = float(r.get("dph_total") or r.get("price") or 9999)
         dlp = float(r.get("dlperf") or r.get("dlp") or 0)
         dlp_usd = float(r.get("dlperf_usd") or r.get("dlp_usd") or 0)
-        score = float(r.get("score") or 0)
         rel = float(r.get("reliability") or r.get("rel") or 0)
         status = str(r.get("status") or "")
         parsed.append({
@@ -110,7 +109,6 @@ for r in rows:
             "price": price,
             "dlp": dlp,
             "dlp_usd": dlp_usd,
-            "score": score,
             "rel": rel,
             "status": status,
         })
@@ -124,11 +122,11 @@ if not parsed:
 parsed.sort(key=lambda r: (-r["dlp_usd"], -r["rel"], r["price"]))
 
 print(f"Modus: {MODE}")
-print("Nr  Offer_ID    Model               $/hr     DLP    DLP/$   Score   Rel    Status")
-print("-" * 80)
+print("Nr  Offer_ID    Model               $/hr     DLP    DLP/$   Rel    Status")
+print("-" * 74)
 for i, r in enumerate(parsed[:RESULTS], 1):
     mark = ">>" if i == 1 else "  "
-    print(f"{mark} {i:2d}  {r['offer_id']:<10} {r['model']:<18} {r['price']:>6.4f}  {r['dlp']:>6.1f}  {r['dlp_usd']:>6.2f}  {r['score']:>6.1f}  {r['rel']:>5.2f}  {r['status']}")
+    print(f"{mark} {i:2d}  {r['offer_id']:<10} {r['model']:<18} {r['price']:>6.4f}  {r['dlp']:>6.1f}  {r['dlp_usd']:>6.2f}  {r['rel']:>5.2f}  {r['status']}")
 
 pick = parsed[0]
 print()
