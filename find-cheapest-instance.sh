@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.10"
+VERSION="2026-05-24.11"
 RESULTS=10
 TX_GB=20.0
 MIN_VRAM_GB=24.0
@@ -19,7 +19,7 @@ color_supported() {
 c() {
   local code="$1"; shift
   local text="$1"
-  if color_supported; then printf '\033[%sm%s\033[0m' "$code" "$text"; else printf '%s' "$text"; fi
+  if color_supported; then printf '\033[%sm%s\\033[0m' "$code" "$text"; else printf '%s' "$text"; fi
 }
 
 green(){ c 32 "$1"; }
@@ -41,15 +41,11 @@ get_auth() {
 
 get_json() {
   local auth="$1"
-  local q
-  q='{"verified":{"eq":true},"rentable":{"eq":true}}'
   curl -fsSL --max-time 30 \
     -H "Authorization: Bearer ${auth}" \
-    --get \
-    --data-urlencode "q=${q}" \
-    --data-urlencode "limit=200" \
-    --data-urlencode 'order=[["dlperf_per_dphtotal","desc"]]' \
-    "$VAST_URL/"
+    "$VAST_URL/" \
+    -d 'q={"verified":{"eq":true},"rentable":{"eq":true}}' \
+    -d 'limit=200'
 }
 
 score_offer() {
