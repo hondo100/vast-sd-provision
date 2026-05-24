@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.20"
+VERSION="2026-05-24.21"
 
 : <<'SCRIPT_NOTES'
 Erkenntnisse / Lessons Learned / Bitte bei Neuauflagen beibehalten und erweitern
@@ -116,6 +116,13 @@ v2026-05-24.20
 - Schluss:
   Syntax bleibt leichter prüfbar, und die Version ist sofort sichtbar.
 
+v2026-05-24.21
+- Neuer Debug-Modus --debug-json ergänzt.
+- Zeigt die tatsächlichen Keys der ersten Offers und optional gekürzte Roh-Objekte, um lokale --raw-Abweichungen zu erkennen.
+- Parser für Preis/Leistungsfeld robuster gemacht, da dlperf_usd in der lokalen Ausgabe offenbar nicht wie erwartet gelesen wurde.
+- Schluss:
+  Vor weiteren Ranking-Anpassungen zuerst Feldnamen und Werte der lokalen CLI-Ausgabe verifizieren.
+
 ======================================================================
 D) NEUER PROBLEM-FALL AB v16b
 ======================================================================
@@ -160,6 +167,10 @@ Diese Befehle zuerst manuell ausführen und die Ausgaben sichern:
 4) CLI-Hilfe gegen lokale Version prüfen
     vastai search offers --help
 
+5) Bei Parser-Auffälligkeiten Feldnamen der lokalen JSON-Ausgabe prüfen
+    bash ./find-cheapest-instance.sh --test --dry-run --debug-json 2> /tmp/vast_debug.err
+    sed -n '1,120p' /tmp/vast_debug.err
+
 Wenn /tmp/vast_raw.out leer ist:
 - Problem liegt NICHT am Parser, sondern an CLI/Version/Auth/Flag-Verhalten.
 
@@ -192,19 +203,23 @@ MODEL_GB=20
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
 MIN_DISK_GB=40
+DEBUG_JSON=0
+DEBUG_JSON_LIMIT=2
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 SORT='dlperf_usd-'
 
 usage() {
   cat <<EOF
-Usage: $0 [--test] [--dry-run] [--diag] [--model-gb N] [--results N]
+Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N] [--model-gb N] [--results N]
 
 Optionen:
-  --test         keine Buchung ausführen
-  --dry-run      nur anzeigen, keine Auswahl/Buchung
-  --diag         nur Diagnose der Roh-CLI-Ausgabe
-  --model-gb N   Modellgröße in GB (default: $MODEL_GB)
-  --results N    Anzahl anzuzeigender Treffer (default: $RESULTS)
+  --test               keine Buchung ausführen
+  --dry-run            nur anzeigen, keine Auswahl/Buchung
+  --diag               nur Diagnose der Roh-CLI-Ausgabe
+  --debug-json         Debug-Ausgabe der ersten Offer-Keys/Objekte nach stderr
+  --debug-json-limit N Anzahl der im Debug gezeigten Offer-Objekte (default: $DEBUG_JSON_LIMIT)
+  --model-gb N         Modellgröße in GB (default: $MODEL_GB)
+  --results N          Anzahl anzuzeigender Treffer (default: $RESULTS)
 EOF
 }
 
@@ -341,6 +356,13 @@ main() {
       --diag)
         diag=1
         ;;
+      --debug-json)
+        DEBUG_JSON=1
+        ;;
+      --debug-json-limit)
+        shift
+        DEBUG_JSON_LIMIT="${1:?Fehlender Wert fuer --debug-json-limit}"
+        ;;
       --model-gb)
         shift
         MODEL_GB="${1:?Fehlender Wert fuer --model-gb}"
@@ -375,6 +397,9 @@ main() {
     echo "Modus: test"
   else
     echo "Modus: live"
+  fi
+  if [[ $DEBUG_JSON -eq 1 ]]; then
+    echo "[INFO] Debug-JSON: aktiv (stderr)"
   fi
   echo
 
@@ -418,16 +443,22 @@ main() {
   fi
 
   raw="$(cat "$out_file")"
+  if [[ -s "$err_file" ]]; then
+    echo "[WARN] vast search schrieb nach stderr (Auszug):" >&2
+    sed -n '1,40p' "$err_file" >&2 || true
+  fi
   rm -f "$out_file" "$err_file"
 
   parsed="$(
-    RAW_JSON="$raw" python3 - "$RESULTS" "$MODEL_GB" <<'PY'
+    RAW_JSON="$raw" DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" python3 - "$RESULTS" "$MODEL_GB" <<'PY'
 import json
 import os
 import sys
 
 results = int(sys.argv[1])
 model_gb = float(sys.argv[2])
+debug_json = int(os.environ.get("DEBUG_JSON", "0"))
+debug_limit = int(os.environ.get("DEBUG_JSON_LIMIT", "2"))
 text = os.environ.get("RAW_JSON", "").strip()
 
 if not text:
@@ -466,6 +497,21 @@ def first_str(d, keys, default=""):
             return str(d[k])
     return default
 
+if debug_json:
+    print(f"#DEBUG offers_total={len(offers)}", file=sys.stderr)
+    for idx, offer in enumerate(offers[:debug_limit]):
+        if isinstance(offer, dict):
+            print(f"#DEBUG offer[{idx}] keys={','.join(sorted(offer.keys()))}", file=sys.stderr)
+            print(
+                "#DEBUG offer[{idx}] json={json}".format(
+                    idx=idx,
+                    json=json.dumps(offer, ensure_ascii=False)[:4000]
+                ),
+                file=sys.stderr
+            )
+        else:
+            print(f"#DEBUG offer[{idx}] type={type(offer).__name__} value={repr(offer)[:1000]}", file=sys.stderr)
+
 rows = []
 for o in offers:
     if not isinstance(o, dict):
@@ -477,7 +523,7 @@ for o in offers:
 
     price = first_num(o, ["dph_total", "dph", "price", "hourly_price"], 0.0)
     dlperf = first_num(o, ["dlperf", "dl_performance", "dlp"], 0.0)
-    dlperf_usd = first_num(o, ["dlperf_usd"], 0.0)
+    dlperf_usd = first_num(o, ["dlperf_usd", "dlperf_per_dphtotal", "flops_usd", "score"], 0.0)
     rel = first_num(o, ["reliability", "reliability2", "rel", "r"], 1.0)
     vram = first_num(o, ["gpu_ram", "gpu_total_ram", "vram"], 0.0)
     inet_down = first_num(o, ["inet_down"], 0.0)
@@ -552,9 +598,9 @@ PY
   echo "  Rot   = unter Mindestanforderungen"
   echo
 
-  printf '%-3s %-10s %-16s %4s %7s %8s %8s %8s %7s %8s %6s %7s %6s\n' \
+  printf '%-3s %-10s %-16s %4s %7s %8s %8s %8s %9s %8s %6s %7s %6s\n' \
     "Nr" "Offer_ID" "Model" "GPUx" "$/hr" "20GB Tx" "Eff$/h" "DLPerf" "DLP/\$" "VRAMGB" "Rel" "Ports" "Score"
-  printf '%s\n' "-------------------------------------------------------------------------------------------------------------"
+  printf '%s\n' "----------------------------------------------------------------------------------------------------------------"
 
   local limit
   limit=$(( RESULTS < ${#rows[@]} ? RESULTS : ${#rows[@]} ))
@@ -568,6 +614,8 @@ PY
   local best_score="-999999"
 
   local i
+  local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified score line
+
   for ((i=0; i<limit; i++)); do
     IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$i]}"
 
@@ -582,7 +630,7 @@ PY
       best_idx="$i"
     fi
 
-    line=$(printf '%-3s %-10s %-16s %4.0f %7.4f %8.4f %8.4f %8.1f %7.1f %8.1f %6.2f %7.0f %6.2f' \
+    line=$(printf '%-3s %-10s %-16s %4.0f %7.4f %8.4f %8.4f %8.1f %9.3f %8.1f %6.2f %7.0f %6.2f' \
       "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$dl" "$dlu" "$vram" "$rel" "$ports" "$score")
 
     if python3 - "$score" <<'PY'
@@ -620,6 +668,7 @@ PY
   fi
 
   local choice=""
+  local raw_choice=""
   while [[ -z "$choice" ]]; do
     read -r -p "Welche Nummer buchen? [1-$limit] (Enter = $((best_idx+1))): " raw_choice
     if [[ -z "$raw_choice" ]]; then
