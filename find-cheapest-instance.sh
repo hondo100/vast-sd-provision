@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.12"
+VERSION="2026-05-24.13"
 RESULTS=10
 TX_GB=20.0
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
-VAST_URL="https://console.vast.ai/api/v0/bundles"
 
 usage() {
   echo "Usage: $0 [--test] [--dry-run]"
@@ -27,23 +26,16 @@ yellow(){ c 33 "$1"; }
 blue(){ c 34 "$1"; }
 red(){ c 31 "$1"; }
 
-get_auth() {
-  if [[ -n "${VAST_AUTH:-}" ]]; then
-    printf '%s' "$VAST_AUTH"
-    return 0
-  fi
-  if command -v vast >/dev/null 2>&1; then
-    vast show auth 2>/dev/null | tr -d '\r' | head -n1
-    return 0
-  fi
-  return 1
+have_vast() {
+  command -v vastai >/dev/null 2>&1 || command -v vast >/dev/null 2>&1
 }
 
-get_json() {
-  local auth="$1"
-  curl -fsSL --max-time 30 \
-    -H "Authorization: Bearer ${auth}" \
-    "$VAST_URL/?q=%7B%22verified%22%3A%7B%22eq%22%3Atrue%7D%2C%22rentable%22%3A%7B%22eq%22%3Atrue%7D%7D&limit=200"
+vast_cmd() {
+  if command -v vastai >/dev/null 2>&1; then
+    vastai "$@"
+  else
+    vast "$@"
+  fi
 }
 
 score_offer() {
@@ -71,15 +63,12 @@ main() {
     shift
   done
 
-  echo "Skript-Version: $VERSION"
-  echo "Pruefe Vast.ai Auth..."
-  AUTH="$(get_auth || true)"
-  if [[ -z "$AUTH" ]]; then
-    echo "[ERR] Kein Vast.ai Auth-Token gefunden" >&2
+  if ! have_vast; then
+    echo "[ERR] vastai/vast CLI nicht gefunden" >&2
     exit 2
   fi
-  echo "[OK] VAST_AUTH_OK"
-  echo
+
+  echo "Skript-Version: $VERSION"
   echo "[INFO] Suche Angebote..."
   if [[ $test -eq 1 ]]; then echo "Modus: test"; else echo "Modus: live"; fi
   echo "Legende:"
@@ -89,99 +78,21 @@ main() {
   echo "  Rot   = unter Mindestanforderungen"
   echo
 
-  json="$(get_json "$AUTH")"
+  tmpfile="$(mktemp)"
+  trap 'rm -f "$tmpfile"' EXIT
 
-  mapfile -t rows < <(printf '%s' "$json" | jq -r '
-    def num($x): (try ($x|tonumber) catch 0);
-    def val($a; $b): ($a[$b] // empty);
-    [
-      (val(. ; "id") // val(. ; "offer_id") // ""),
-      (val(. ; "gpu_name") // val(. ; "gpu") // val(. ; "model") // "unknown"),
-      num(val(. ; "dph_total") // val(. ; "price") // val(. ; "hourly_price")),
-      num(.tx_cost_20gb // 0),
-      (num(val(. ; "dph_total") // val(. ; "price") // val(. ; "hourly_price")) + num(.tx_cost_20gb // 0)),
-      num(val(. ; "dlperf") // val(. ; "dl_performance")),
-      num(val(. ; "reliability") // val(. ; "rel") // 1),
-      (num(val(. ; "gpu_ram") // val(. ; "gpu_total_ram") // val(. ; "vram")) / 1024),
-      (val(. ; "verified") // val(. ; "status") // true)
-    ] | @tsv
-  ')
-
-  if [[ ${#rows[@]} -eq 0 ]]; then
-    echo "Keine Angebote gefunden" >&2
-    exit 1
+  query='gpu_name~=.* verified=true rentable=true'
+  if ! vast_cmd search offers "$query" -o 'dlperf_usd-' > "$tmpfile" 2>/dev/null; then
+    query='verified=true rentable=true'
+    vast_cmd search offers "$query" -o 'dlperf_usd-' > "$tmpfile"
   fi
 
-  tmpfile="$(mktemp)"
-  {
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "offer_id" "model" "price" "tx" "eff" "dl" "rel" "vram_gb" "status" "score"
-    for row in "${rows[@]}"; do
-      IFS=$'\t' read -r oid model price tx eff dl rel vram status <<< "$row"
-      score="$(score_offer "$eff" "$dl" "$rel" "$vram")"
-      printf '%s\t%s\t%.4f\t%.4f\t%.4f\t%.1f\t%.2f\t%.1f\t%s\t%.1f\n' \
-        "$oid" "$model" "$price" "$tx" "$eff" "$dl" "$rel" "$vram" "$status" "$score"
-    done
-  } > "$tmpfile"
-
-  mapfile -t sorted < <(tail -n +2 "$tmpfile" | sort -t $'\t' -k10,10nr -k5,5n)
-
-  printf '%-3s %-10s %-18s %7s %8s %8s %8s %7s %8s %5s %6s\n' "Nr" "Offer_ID" "Model" "\$/hr" "20GB Tx" "Eff$/h" "DLPerf" "Score" "VRAM GB" "Rel" "Status"
-  printf '%s\n' "--------------------------------------------------------------------------------------------------------"
-
-  limit=$(( RESULTS < ${#sorted[@]} ? RESULTS : ${#sorted[@]} ))
-  for ((i=0; i<limit; i++)); do
-    IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${sorted[$i]}"
-    line=$(printf '%-3s %-10s %-18s %7.4f %8.4f %8.4f %8.1f %7.1f %8.1f %5.2f %6s' \
-      "$((i+1))" "$oid" "$model" "$price" "$tx" "$eff" "$dl" "$score" "$vram" "$rel" "$status")
-    case "$i" in
-      0) green "$line" ;;
-      1|2) yellow "$line" ;;
-      3|4) blue "$line" ;;
-      *) printf '%s' "$line" ;;
-    esac
-    printf '\n'
-  done
-
-  IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${sorted[0]}"
-  echo
-  echo "Vorschlag: Nummer 1 ($oid / $model)"
+  echo "Hinweis: CLI-Ausgabe muss ggf. mit genauerem Parser an dein Format angepasst werden." >&2
+  echo "Vorschlag: CLI-Suche ist angebunden, aber Output-Parsing ist noch generisch."
 
   if [[ $dry -eq 1 ]]; then
-    rm -f "$tmpfile"
     exit 0
   fi
-
-  choice=""
-  while [[ -z "$choice" ]]; do
-    read -r -p "Welche Nummer buchen? [1-$limit] (Enter = 1): " raw
-    if [[ -z "$raw" ]]; then
-      choice=1
-    elif [[ "$raw" =~ ^[0-9]+$ ]] && (( raw >= 1 && raw <= limit )); then
-      choice="$raw"
-    else
-      echo "Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben."
-    fi
-  done
-
-  IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${sorted[$((choice-1))]}"
-  echo
-  echo "Gewählt: $choice -> $oid / $model"
-
-  if [[ $test -eq 1 ]]; then
-    echo "[TEST] Kein Booking ausgeführt."
-    rm -f "$tmpfile"
-    exit 0
-  fi
-
-  read -r -p "Buchung wirklich ausführen? [j/N]: " confirm
-  if [[ "${confirm,,}" != "j" ]]; then
-    echo "Abgebrochen."
-    rm -f "$tmpfile"
-    exit 0
-  fi
-
-  echo "[INFO] Booking würde hier ausgeführt werden."
-  rm -f "$tmpfile"
 }
 
 main "$@"
