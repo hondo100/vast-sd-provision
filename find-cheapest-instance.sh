@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.23"
+VERSION="2026-05-24.24"
 
 : <<'SCRIPT_OVERVIEW'
 ========================================================================
 SCRIPT ARGUMENTS / OPTIONEN
 ========================================================================
 
+Zweck dieses Skripts
+- Dieses Skript dient zur Auswahl wirtschaftlicher Vast-Angebote.
+- Die eigentliche Buchung erfolgt anschliessend manuell im Vast-Webinterface.
+- Dort kann gezielt das Template "SD WebUI Forge" ausgewaehlt werden.
+- Dieses Skript bucht NICHT automatisch.
+
 Grundmodi
 - --test
-  Fuehrt keine echte Buchung aus. Die Auswahl- und Anzeige-Logik laeuft,
-  aber create instance wird nicht ausgefuehrt.
+  Rein informativer Modus. Aktuell identisch zum Normalmodus, da keine
+  automatische Buchung mehr erfolgt.
 
 - --dry-run
-  Zeigt nur die Trefferliste und den Vorschlag an. Es erfolgt keine
-  Rueckfrage zur Auswahl und keine Buchung.
+  Zeigt nur die Trefferliste und den Vorschlag an.
 
 - --diag
   Fuehrt nur eine Rohdiagnose der Vast-CLI-Ausgabe aus:
@@ -37,50 +42,34 @@ Such- und Bewertungsparameter
   Downloadkosten (inet_down_cost) und die Storage-Kosten verwendet.
   Standard: 20
 
+- --session-hours N
+  Angenommene typische Nutzungsdauer pro Sitzung in Stunden.
+  Die initialen Downloadkosten des Modells werden auf diese Dauer
+  umgelegt, um realistischere Effektivkosten pro Stunde zu berechnen.
+  Standard: 3
+
 - --results N
   Anzahl der anzuzeigenden Treffer. Standard: 10
 
-Booking-Parameter
-- --image IMAGE
-  Docker-Image fuer `vastai create instance`.
-  Standard:
-    pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime
-
-- --disk-gb N
-  Zu buchender Disk-Speicher in GB fuer create instance.
-  Standard: 40
-
-- --onstart-cmd CMD
-  Startup-Kommando fuer create instance.
-
-- --no-ssh
-  Bucht die Instanz ohne `--ssh`.
-
-- --no-direct
-  Bucht die Instanz ohne `--direct`.
-
 Interaktives Verhalten
 - Das Skript macht nur einen Vorschlag fuer die wirtschaftlichste
-  Instanz, bucht aber NICHT automatisch den Top-Treffer.
-- Der Benutzer waehlt die endgueltige Nummer selbst.
-- Enter uebernimmt den Vorschlag.
+  Instanz.
+- Die endgueltige Entscheidung und Buchung erfolgen manuell im Vast-UI.
+- Dort kann z. B. das Template "SD WebUI Forge" gewaehlt werden.
 
 Beispiele
 - Nur anzeigen:
-    bash ./find-cheapest-instance.sh --test --dry-run
+    bash ./find-cheapest-instance.sh --dry-run
 
 - Rohdiagnose:
     bash ./find-cheapest-instance.sh --diag
 
 - JSON-Debug:
-    bash ./find-cheapest-instance.sh --test --dry-run --debug-json 2>/tmp/vast_debug.err
+    bash ./find-cheapest-instance.sh --dry-run --debug-json 2>/tmp/vast_debug.err
     sed -n '1,120p' /tmp/vast_debug.err
 
-- Echte Buchung mit eigenem Image:
-    bash ./find-cheapest-instance.sh \
-      --image vllm/vllm-openai:latest \
-      --disk-gb 80 \
-      --onstart-cmd 'nvidia-smi && python -V'
+- Eigene Sitzungsdauer:
+    bash ./find-cheapest-instance.sh --session-hours 2 --results 15
 
 ========================================================================
 GEWONNENE ERKENNTNISSE / LESSONS LEARNED
@@ -136,21 +125,18 @@ GEWONNENE ERKENNTNISSE / LESSONS LEARNED
 - Angebote unterhalb der Schwelle werden im Score als ungeeignet
   markiert.
 
-7) Buchung bewusst interaktiv halten
-- Das Skript soll nur einen Vorschlag machen.
-- Die endgueltige Buchungsentscheidung bleibt beim Benutzer.
-- Keine automatische Buchung des Rang-1-Treffers.
-- Enter uebernimmt den Vorschlag, aber jede angezeigte Nummer kann
-  bewusst ausgewaehlt werden.
+7) Auswahlhilfe statt Auto-Buchung
+- Das Skript soll einen Vorschlag machen, aber nicht automatisch buchen.
+- Die endgueltige Buchung erfolgt bewusst im Vast-Webinterface.
+- So kann dort gezielt ein passendes Template wie "SD WebUI Forge"
+  ausgewaehlt werden.
 
-8) SSH / Lifecycle
-- Vor Nutzung von `--ssh` sicherstellen, dass im Vast-Account ein
-  SSH-Key hinterlegt ist.
-- Nach erfolgreicher Buchung sind typischerweise relevant:
-    vastai ssh-url INSTANCE_ID
-    vastai show instance INSTANCE_ID
-    vastai stop instance INSTANCE_ID
-    vastai destroy instance INSTANCE_ID
+8) Vast-Template hat eigene Laufzeitumgebung
+- Wenn die Instanz spaeter im Vast-UI mit einem Template erstellt wird,
+  bestimmt das Template die konkrete Laufzeitumgebung.
+- Ein frueher im Skript gesetztes Docker-Image waere dafuer nicht
+  massgeblich.
+- Deshalb fokussiert dieses Skript nur auf Angebotsauswahl.
 
 9) Bewertungssystem auf interaktives Arbeiten ausgerichtet
 - Dieses Skript optimiert NICHT auf maximalen Batch-Durchsatz.
@@ -162,15 +148,23 @@ GEWONNENE ERKENNTNISSE / LESSONS LEARNED
 - Multi-GPU-Angebote werden leicht abgestraft, wenn sie fuer den Use
   Case voraussichtlich nur Mehrkosten statt echten Nutzen bringen.
 
+10) Effektivkosten an reale Sitzungsdauer koppeln
+- Fuer diesen Use Case sind kurze interaktive Sessions von ca. 3 Stunden
+  realistischer als 24h-Dauerbetrieb.
+- Die initialen Downloadkosten des Modells werden deshalb nicht auf 24h,
+  sondern auf die angenommene Sitzungsdauer umgelegt.
+- Dadurch werden Kurzsitzungen realistischer bewertet.
+
 Kurzfazit
 - Nicht Tabellen parsen.
 - Nicht rohe Bundles-API priorisieren.
 - Erst Rohdaten pruefen, dann Parser anpassen.
-- Finale Buchung immer bewusst durch Benutzerwahl ausloesen.
+- Auswahl im Skript, Buchung bewusst im Vast-UI mit passendem Template.
 SCRIPT_OVERVIEW
 
 RESULTS=10
 MODEL_GB=20
+SESSION_HOURS=3
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
 MIN_DISK_GB=40
@@ -180,16 +174,10 @@ DEBUG_JSON_LIMIT=2
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 SORT='dlperf_usd-'
 
-IMAGE="${IMAGE:-pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime}"
-DISK_GB="${DISK_GB:-40}"
-ONSTART_CMD="${ONSTART_CMD:-echo hello && nvidia-smi}"
-ENABLE_SSH="${ENABLE_SSH:-1}"
-ENABLE_DIRECT="${ENABLE_DIRECT:-1}"
-
 usage() {
   cat <<EOF
-Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N] [--model-gb N] [--results N]
-          [--image IMAGE] [--disk-gb N] [--onstart-cmd CMD] [--no-ssh] [--no-direct]
+Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N]
+          [--model-gb N] [--session-hours N] [--results N]
 EOF
 }
 
@@ -241,8 +229,9 @@ vast_cmd() {
 #    - Reliability < MIN_REL  -> ungeeignet
 #
 # 2) Hohe Gewichtung auf niedrige effektive Stundenkosten:
-#    - eff_hour = GPU-Kosten plus auf 24h umgelegte initiale
-#      Downloadkosten des Modells
+#    - eff_hour = GPU-Kosten plus auf die angenommene typische
+#      Sitzungsdauer umgelegte initiale Downloadkosten des Modells
+#    - Standardannahme: kurze interaktive Sitzungen von ca. 3 Stunden
 #    - Je niedriger eff_hour, desto besser
 #
 # 3) VRAM nur bis zu einer sinnvollen Reserve belohnen:
@@ -388,93 +377,6 @@ PY
   rm -f "$out_file" "$err_file"
 }
 
-create_instance() {
-  local offer_id="$1"
-  local tmp_out tmp_err rc create_args instance_id
-
-  tmp_out="$(mktemp)"
-  tmp_err="$(mktemp)"
-
-  create_args=(create instance "$offer_id" --image "$IMAGE" --disk "$DISK_GB")
-  if [[ -n "$ONSTART_CMD" ]]; then
-    create_args+=(--onstart-cmd "$ONSTART_CMD")
-  fi
-  if [[ "$ENABLE_SSH" -eq 1 ]]; then
-    create_args+=(--ssh)
-  fi
-  if [[ "$ENABLE_DIRECT" -eq 1 ]]; then
-    create_args+=(--direct)
-  fi
-
-  echo "[INFO] Fuehre Booking aus..."
-  echo "[INFO] Kommando: $(printf '%q ' "$(command -v vastai || command -v vast)" "${create_args[@]}")"
-
-  set +e
-  vast_cmd "${create_args[@]}" >"$tmp_out" 2>"$tmp_err"
-  rc=$?
-  set -e
-
-  echo "[INFO] create instance stdout:"
-  sed -n '1,120p' "$tmp_out" || true
-
-  if [[ -s "$tmp_err" ]]; then
-    echo "[INFO] create instance stderr:"
-    sed -n '1,120p' "$tmp_err" || true
-  fi
-
-  if [[ $rc -ne 0 ]]; then
-    echo "[ERR] Booking fehlgeschlagen (RC=$rc)." >&2
-    rm -f "$tmp_out" "$tmp_err"
-    return 1
-  fi
-
-  instance_id="$(
-    python3 - "$tmp_out" <<'PY'
-import json
-import re
-import sys
-
-p = sys.argv[1]
-txt = open(p, "r", encoding="utf-8", errors="replace").read().strip()
-
-if not txt:
-    raise SystemExit(0)
-
-candidates = [txt]
-if txt.splitlines():
-    candidates.append(txt.splitlines()[-1])
-
-for candidate in candidates:
-    try:
-        data = json.loads(candidate)
-        if isinstance(data, dict):
-            for k in ("new_contract", "instance_id", "id"):
-                if k in data and data[k] not in (None, ""):
-                    print(data[k])
-                    raise SystemExit(0)
-    except Exception:
-        pass
-
-m = re.search(r'\b(\d{6,})\b', txt)
-if m:
-    print(m.group(1))
-PY
-  )"
-
-  if [[ -n "$instance_id" ]]; then
-    echo "[OK] Instanz erstellt. Instance-ID: $instance_id"
-    echo "[INFO] SSH-URL (falls verfuegbar):"
-    vast_cmd ssh-url "$instance_id" 2>/dev/null || true
-    echo "[INFO] Show:      vastai show instance $instance_id"
-    echo "[INFO] Stoppen:   vastai stop instance $instance_id"
-    echo "[INFO] Zerstoeren: vastai destroy instance $instance_id"
-  else
-    echo "[WARN] Booking erfolgreich, aber Instance-ID konnte nicht sicher aus der Ausgabe extrahiert werden."
-  fi
-
-  rm -f "$tmp_out" "$tmp_err"
-}
-
 main() {
   local test=0
   local dry=0
@@ -502,27 +404,13 @@ main() {
         shift
         MODEL_GB="${1:?Fehlender Wert fuer --model-gb}"
         ;;
+      --session-hours)
+        shift
+        SESSION_HOURS="${1:?Fehlender Wert fuer --session-hours}"
+        ;;
       --results)
         shift
         RESULTS="${1:?Fehlender Wert fuer --results}"
-        ;;
-      --image)
-        shift
-        IMAGE="${1:?Fehlender Wert fuer --image}"
-        ;;
-      --disk-gb)
-        shift
-        DISK_GB="${1:?Fehlender Wert fuer --disk-gb}"
-        ;;
-      --onstart-cmd)
-        shift
-        ONSTART_CMD="${1:?Fehlender Wert fuer --onstart-cmd}"
-        ;;
-      --no-ssh)
-        ENABLE_SSH=0
-        ;;
-      --no-direct)
-        ENABLE_DIRECT=0
         ;;
       -h|--help)
         usage
@@ -547,13 +435,8 @@ main() {
   echo "[INFO] Sortierung (Vast-Vorfilter): $SORT"
   echo "[INFO] Tabellensortierung lokal: Score absteigend"
   echo "[INFO] Modellgroesse fuer initiale Beladung: ${MODEL_GB} GB"
-  echo "[INFO] Booking-Image: $IMAGE"
-  echo "[INFO] Booking-Disk: ${DISK_GB} GB"
-  echo "[INFO] Booking-SSH: $ENABLE_SSH"
-  echo "[INFO] Booking-Direct: $ENABLE_DIRECT"
-  if [[ -n "$ONSTART_CMD" ]]; then
-    echo "[INFO] Booking-Onstart: $ONSTART_CMD"
-  fi
+  echo "[INFO] Angenommene Sitzungsdauer: ${SESSION_HOURS} h"
+  echo "[INFO] Ziel-Workflow: Auswahl im Skript, Buchung danach im Vast-UI mit Template (z. B. SD WebUI Forge)"
   if [[ $test -eq 1 ]]; then
     echo "Modus: test"
   else
@@ -611,13 +494,15 @@ main() {
   rm -f "$out_file" "$err_file"
 
   parsed="$(
-    RAW_JSON="$raw" DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" python3 - "$RESULTS" "$MODEL_GB" <<'PY'
+    RAW_JSON="$raw" DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" \
+    python3 - "$RESULTS" "$MODEL_GB" "$SESSION_HOURS" <<'PY'
 import json
 import os
 import sys
 
 results = int(sys.argv[1])
 model_gb = float(sys.argv[2])
+session_hours = float(sys.argv[3])
 debug_json = int(os.environ.get("DEBUG_JSON", "0"))
 debug_limit = int(os.environ.get("DEBUG_JSON_LIMIT", "2"))
 text = os.environ.get("RAW_JSON", "").strip()
@@ -699,7 +584,7 @@ for o in offers:
 
     initial_load_cost = model_gb * inet_down_cost
     monthly_model_storage = model_gb * storage_cost
-    eff_hour = price + (initial_load_cost / 24.0)
+    eff_hour = price + (initial_load_cost / max(session_hours, 0.1))
 
     rows.append({
         "oid": oid,
@@ -784,15 +669,15 @@ PY
   limit=${#rows[@]}
   local best_idx=0
 
-  printf '%-3s %-10s %-16s %4s %7s %8s %8s %8s %9s %8s %6s %7s %6s\n' \
+  printf '%-3s %-10s %-18s %4s %7s %8s %8s %8s %9s %8s %6s %7s %6s\n' \
     "Nr" "Offer_ID" "Model" "GPUx" "\$/hr" "20GB Tx" "Eff\$/h" "DLPerf" "DLP/\$" "VRAMGB" "Rel" "Ports" "Score"
-  printf '%s\n' "----------------------------------------------------------------------------------------------------------------"
+  printf '%s\n' "------------------------------------------------------------------------------------------------------------------"
 
   for ((i=0; i<limit; i++)); do
     IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg")"
 
-    line=$(printf '%-3s %-10s %-16s %4.0f %7.4f %8.4f %8.4f %8.1f %9.3f %8.1f %6.2f %7.0f %6.2f' \
+    line=$(printf '%-3s %-10s %-18s %4.0f %7.4f %8.4f %8.4f %8.1f %9.3f %8.1f %6.2f %7.0f %6.2f' \
       "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$dl" "$dlu" "$vram" "$rel" "$ports" "$score")
 
     if python3 - "$score" <<'PY'
@@ -818,51 +703,13 @@ PY
   echo "Vorschlag: Nummer $((best_idx+1)) ($oid / $model)"
   echo "  - Stundenpreis: ${price} $/h"
   echo "  - Initiale 20GB-Beladung: ${tx} $"
-  echo "  - Effektivpreis erste 24h (vereinfacht): ${eff} $/h"
+  echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: ${eff} $/h"
   echo "  - Monatliche Storage-Kosten fuer 20GB: ${month} $/Monat"
   echo "  - DLPerf: ${dl}, DLPerf/\$: ${dlu}, VRAM: ${vram} GB, Reliability: ${rel}, Ports: ${ports}"
-
-  if [[ $dry -eq 1 ]]; then
-    exit 0
-  fi
-
-  local choice=""
-  local raw_choice=""
-  while [[ -z "$choice" ]]; do
-    read -r -p "Welche Nummer buchen? [1-$limit] (Enter = $((best_idx+1))): " raw_choice
-    if [[ -z "$raw_choice" ]]; then
-      choice="$((best_idx+1))"
-    elif [[ "$raw_choice" =~ ^[0-9]+$ ]] && (( raw_choice >= 1 && raw_choice <= limit )); then
-      choice="$raw_choice"
-    else
-      echo "Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben."
-    fi
-  done
-
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$((choice-1))]}"
-
   echo
-  echo "Gewählt: $choice -> $oid / $model"
-  echo "[INFO] Booking-Parameter:"
-  echo "  - Offer-ID: $oid"
-  echo "  - Image: $IMAGE"
-  echo "  - Disk: $DISK_GB GB"
-  echo "  - SSH: $ENABLE_SSH"
-  echo "  - Direct: $ENABLE_DIRECT"
-  echo "  - Onstart: $ONSTART_CMD"
-
-  if [[ $test -eq 1 ]]; then
-    echo "[TEST] Kein Booking ausgeführt."
-    exit 0
-  fi
-
-  read -r -p "Buchung wirklich ausführen? [j/N]: " confirm
-  if [[ "${confirm,,}" != "j" ]]; then
-    echo "Abgebrochen."
-    exit 0
-  fi
-
-  create_instance "$oid"
+  echo "[HINWEIS] Dieses Skript bucht nicht automatisch."
+  echo "[HINWEIS] Nutze die Offer-ID $oid im Vast-Webinterface und waehle dort dein Template,"
+  echo "          z. B. 'SD WebUI Forge'."
 }
 
 main "$@"
