@@ -1,215 +1,207 @@
-#!/usr/bin/env python3
-# find-cheapest-instance.sh
-# Version: 2026-05-24.7
+#!/usr/bin/env bash
+set -euo pipefail
 
-import os
-import sys
-import json
-import argparse
-import subprocess
-import time
+VERSION="2026-05-24.8"
+RESULTS=10
+TX_GB=20.0
+MIN_VRAM_GB=24.0
+MIN_REL=0.95
+MIN_DL_PERF=0.0
+VAST_URL="https://console.vast.ai/api/v0/bundles"
 
-try:
-    import requests
-except ImportError:
-    print("[ERR] requests fehlt. Bitte installieren: pip install requests", file=sys.stderr)
-    sys.exit(1)
+usage() {
+  echo "Usage: $0 [--test] [--dry-run]"
+}
 
-VERSION = "2026-05-24.7"
-RESULTS = 10
-TX_GB = 20.0
-MIN_VRAM_GB = 24.0
-MIN_REL = 0.95
-MIN_DL_PERF = 0.0
-VAST_URL = "https://console.vast.ai/api/v0/bundles"
+color_supported() {
+  [[ -t 1 ]]
+}
 
-def c(text, code):
-    return f"\033[{code}m{text}\033[0m"
+c() {
+  local code="$1"; shift
+  local text="$1"
+  if color_supported; then printf '\033[%sm%s\033[0m' "$code" "$text"; else printf '%s' "$text"; fi
+}
 
-def green(text): return c(text, "32")
-def yellow(text): return c(text, "33")
-def blue(text): return c(text, "34")
-def red(text): return c(text, "31")
-def bold(text): return c(text, "1")
+green(){ c 32 "$1"; }
+yellow(){ c 33 "$1"; }
+blue(){ c 34 "$1"; }
+red(){ c 31 "$1"; }
+bold(){ c 1 "$1"; }
 
-def fmt_num(x, width=7, prec=1):
-    return f"{x:>{width}.{prec}f}"
+get_auth() {
+  if [[ -n "${VAST_AUTH:-}" ]]; then
+    printf '%s' "$VAST_AUTH"
+    return 0
+  fi
+  if command -v vast >/dev/null 2>&1; then
+    vast show auth 2>/dev/null | tr -d '\r' | head -n1
+    return 0
+  fi
+  return 1
+}
 
-def get_auth():
-    env = os.getenv("VAST_AUTH", "").strip()
-    if env:
-        return env
-    try:
-        out = subprocess.check_output(["vast", "show", "auth"], text=True).strip()
-        return out
-    except Exception:
-        return ""
+get_json() {
+  local auth="$1"
+  curl -fsSL --max-time 30 \
+    -H "Authorization: Bearer ${auth}" \
+    "$VAST_URL?q={\"verified\":{\"eq\":true}}&limit=200&order=-gpu_total_ram"
+}
 
-def fetch_offers():
-    params = {
-        "q": json.dumps({
-            "verified": {"eq": True}
-        }),
-        "limit": 200,
-        "order": "-gpu_total_ram"
-    }
-    headers = {"Authorization": f"Bearer {AUTH}"}
-    r = requests.get(VAST_URL, params=params, headers=headers, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict) and "offers" in data:
-        return data["offers"]
-    if isinstance(data, dict) and "results" in data:
-        return data["results"]
-    if isinstance(data, list):
-        return data
-    return []
+extract() {
+  jq -r "$1"
+}
 
-def get_value(d, *keys, default=0):
-    for k in keys:
-        if k in d and d[k] is not None:
-            return d[k]
-    return default
+score_offer() {
+  local price="$1" eff="$2" dl="$3" rel="$4" vram="$5"
+  awk -v price="$price" -v eff="$eff" -v dl="$dl" -v rel="$rel" -v vram="$vram" -v minv="$MIN_VRAM_GB" -v minr="$MIN_REL" '
+    BEGIN {
+      if (vram < minv || rel < minr) { print -1; exit }
+      price_score = 1.0 / (eff > 0.0001 ? eff : 0.0001)
+      vram_bonus = vram / 24.0
+      if (vram_bonus > 2.0) vram_bonus = 2.0
+      dl_bonus = dl / 100.0
+      print (price_score * 0.45) + (dl_bonus * 0.35) + (vram_bonus * 0.15) + (rel * 0.05)
+    }'
+}
 
-def as_float(v, default=0.0):
-    try:
-        return float(v)
-    except Exception:
-        return default
+classify_color() {
+  case "$1" in
+    0) echo green ;;
+    1|2) echo yellow ;;
+    3|4) echo blue ;;
+    *) echo cat ;;
+  esac
+}
 
-def score_offer(r):
-    price = as_float(get_value(r, "dph_total", "price", "hourly_price", default=0))
-    eff = as_float(r.get("effective_hourly", price))
-    dl = as_float(get_value(r, "dlperf", "dl_performance", default=0))
-    rel = as_float(get_value(r, "reliability", "rel", default=1))
-    vram = as_float(get_value(r, "gpu_ram", "gpu_total_ram", "vram", default=0)) / 1024.0
+main() {
+  local test=0 dry=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --test) test=1 ;;
+      --dry-run) dry=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
+    esac
+    shift
+  done
 
-    if vram < MIN_VRAM_GB or rel < MIN_REL:
-        return -1
+  echo "Skript-Version: $VERSION"
+  echo "Pruefe Vast.ai Auth..."
+  AUTH="$(get_auth || true)"
+  if [[ -z "$AUTH" ]]; then
+    echo "[ERR] Kein Vast.ai Auth-Token gefunden" >&2
+    exit 2
+  fi
+  echo "[OK] VAST_AUTH_OK"
+  echo
+  echo "[INFO] Suche Angebote..."
+  if [[ $test -eq 1 ]]; then echo "Modus: test"; else echo "Modus: live"; fi
+  echo "Legende:"
+  echo "  Grün  = bester GenAI-Score"
+  echo "  Gelb  = gute Balance aus Preis und Leistung"
+  echo "  Blau  = günstigste effektive Kosten"
+  echo "  Rot   = unter Mindestanforderungen"
+  echo
 
-    price_score = 1.0 / max(eff, 0.0001)
-    vram_bonus = min(vram / 24.0, 2.0)
-    rel_bonus = rel
-    dl_bonus = dl / 100.0
-    return price_score * 0.45 + dl_bonus * 0.35 + vram_bonus * 0.15 + rel_bonus * 0.05
+  json="$(get_json "$AUTH")"
 
-def classify(i):
-    if i == 0:
-        return green
-    if i in (1, 2):
-        return yellow
-    if i in (3, 4):
-        return blue
-    return lambda x: x
+  mapfile -t rows < <(printf '%s' "$json" | jq -r '
+    def get($a; $b): ($a[$b] // empty);
+    def num($x): (try ($x|tonumber) catch 0);
+    def model: (get(. ; "gpu_name") // get(. ; "gpu") // get(. ; "model") // "unknown");
+    def oid: (get(. ; "id") // get(. ; "offer_id") // "");
+    def price: num(get(. ; "dph_total") // get(. ; "price") // get(. ; "hourly_price"));
+    def tx: num(.tx_cost_20gb // 0);
+    def eff: (price + tx);
+    def dl: num(get(. ; "dlperf") // get(. ; "dl_performance"));
+    def rel: num(get(. ; "reliability") // get(. ; "rel") // 1);
+    def vram: (num(get(. ; "gpu_ram") // get(. ; "gpu_total_ram") // get(. ; "vram")) / 1024);
+    def status: (get(. ; "verified") // get(. ; "status") // true);
+    [oid, model, price, tx, eff, dl, rel, vram, status] | @tsv
+  ')
 
-def main():
-    global AUTH
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--test", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+  if [[ ${#rows[@]} -eq 0 ]]; then
+    echo "Keine Angebote gefunden" >&2
+    exit 1
+  fi
 
-    print(f"Skript-Version: {VERSION}")
-    print("Pruefe Vast.ai Auth...")
-    AUTH = get_auth()
-    if not AUTH:
-        print("[ERR] Kein Vast.ai Auth-Token gefunden", file=sys.stderr)
-        sys.exit(2)
-    print("[OK] VAST_AUTH_OK")
-    print()
-    print("[INFO] Suche Angebote...")
-    print(f"Modus: {'test' if args.test else 'live'}")
-    print("Legende:")
-    print("  Grün  = bester GenAI-Score")
-    print("  Gelb  = gute Balance aus Preis und Leistung")
-    print("  Blau  = günstigste effektive Kosten")
-    print("  Rot   = unter Mindestanforderungen")
-    print()
+  tmpfile="$(mktemp)"
+  {
+    printf '%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\n' "offer_id" "model" "price" "tx" "eff" "dl" "score" "vram_gb" "rel" "status"
+    for row in "${rows[@]}"; do
+      IFS=$'\t' read -r oid model price tx eff dl rel vram status <<< "$row"
+      score="$(score_offer "$price" "$eff" "$dl" "$rel" "$vram")"
+      printf '%s\t%s\t%.4f\t%.4f\t%.4f\t%.1f\t%.1f\t%.1f\t%.2f\t%s\n' \
+        "$oid" "$model" "$price" "$tx" "$eff" "$dl" "$score" "$vram" "$rel" "$status"
+    done
+  } > "$tmpfile"
 
-    offers = fetch_offers()
+  mapfile -t sorted < <(tail -n +2 "$tmpfile" | sort -t $'\t' -k7,7nr -k5,5n)
 
-    parsed = []
-    for r in offers:
-        price = as_float(get_value(r, "dph_total", "price", "hourly_price", default=0))
-        tx = as_float(r.get("tx_cost_20gb", 0))
-        eff = price + tx
-        dl = as_float(get_value(r, "dlperf", "dl_performance", default=0))
-        rel = as_float(get_value(r, "reliability", "rel", default=1))
-        vram_gb = as_float(get_value(r, "gpu_ram", "gpu_total_ram", "vram", default=0)) / 1024.0
-        status = bool(get_value(r, "verified", "status", default=True))
-        model = str(get_value(r, "gpu_name", "model", "gpu", default="unknown"))
-        offer_id = str(get_value(r, "id", "offer_id", default=""))
-        parsed.append({
-            "offer_id": offer_id,
-            "model": model,
-            "price": price,
-            "tx": tx,
-            "eff": eff,
-            "dl": dl,
-            "rel": rel,
-            "vram_gb": vram_gb,
-            "status": status,
-            "score": score_offer(r),
-        })
+  printf '%-3s %-10s %-18s %7s %8s %8s %8s %7s %8s %5s %6s\n' "Nr" "Offer_ID" "Model" "$/hr" "20GB Tx" "Eff$/h" "DLPerf" "Score" "VRAM GB" "Rel" "Status"
+  printf '%s\n' "--------------------------------------------------------------------------------------------------------"
 
-    parsed = sorted(parsed, key=lambda x: (-x["score"], x["eff"], -x["dl"]))
+  limit=$(( RESULTS < ${#sorted[@]} ? RESULTS : ${#sorted[@]} ))
+  for ((i=0; i<limit; i++)); do
+    IFS=$'\t' read -r oid model price tx eff dl score vram rel status <<< "${sorted[$i]}"
+    line=$(printf '%-3s %-10s %-18s %7.4f %8.4f %8.4f %8.1f %7.1f %8.1f %5.2f %6s' \
+      "$((i+1))" "$oid" "$model" "$price" "$tx" "$eff" "$dl" "$score" "$vram" "$rel" "$status")
+    if awk -v s="$score" 'BEGIN{exit !(s < 0)}'; then
+      red "$line"
+    else
+      case "$i" in
+        0) green "$line" ;;
+        1|2) yellow "$line" ;;
+        3|4) blue "$line" ;;
+        *) printf '%s' "$line" ;;
+      esac
+    fi
+    printf '\n'
+  done
 
-    print(f"{'Nr':<3} {'Offer_ID':<10} {'Model':<18} {'$/hr':>7} {'20GB Tx':>8} {'Eff$/h':>8} {'DLPerf':>8} {'Score':>7} {'VRAM GB':>8} {'Rel':>5} {'Status':>6}")
-    print("-" * 96)
+  best="${sorted[0]}"
+  IFS=$'\t' read -r oid model price tx eff dl score vram rel status <<< "$best"
+  echo
+  echo "Vorschlag: Nummer 1 ($oid / $model)"
 
-    shown = parsed[:RESULTS]
-    for idx, r in enumerate(shown, start=1):
-        color = classify(idx - 1)
-        line = (
-            f"{idx:<3} {r['offer_id']:<10} {r['model']:<18} "
-            f"{r['price']:>7.4f} {r['tx']:>8.4f} {r['eff']:>8.4f} "
-            f"{r['dl']:>8.1f} {r['score']:>7.1f} {r['vram_gb']:>8.1f} "
-            f"{r['rel']:>5.2f} {str(r['status']):>6}"
-        )
-        if r["score"] < 0:
-            line = red(line)
-        else:
-            line = color(line)
-        print(line)
+  if [[ $dry -eq 1 ]]; then
+    rm -f "$tmpfile"
+    exit 0
+  fi
 
-    print()
-    if shown:
-        print(f"Vorschlag: Nummer 1 ({shown[0]['offer_id']} / {shown[0]['model']})")
-    else:
-        print("Vorschlag: keine passenden Angebote gefunden")
-        sys.exit(1)
+  choice=""
+  while [[ -z "$choice" ]]; do
+    read -r -p "Welche Nummer buchen? [1-$limit] (Enter = 1): " raw
+    if [[ -z "$raw" ]]; then
+      choice=1
+    elif [[ "$raw" =~ ^[0-9]+$ ]] && (( raw >= 1 && raw <= limit )); then
+      choice="$raw"
+    else
+      echo "Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben."
+    fi
+  done
 
-    if args.dry_run:
-        sys.exit(0)
+  selected="${sorted[$((choice-1))]}"
+  IFS=$'\t' read -r oid model price tx eff dl score vram rel status <<< "$selected"
+  echo
+  echo "Gewählt: $choice -> $oid / $model"
 
-    choice = None
-    limit = min(RESULTS, len(shown))
-    while choice is None:
-        raw_choice = input(f"Welche Nummer buchen? [1-{limit}] (Enter = 1): ").strip()
-        if raw_choice == "":
-            choice = 1
-            break
-        if raw_choice.isdigit():
-            n = int(raw_choice)
-            if 1 <= n <= limit:
-                choice = n
-                break
-        print("Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben.")
+  if [[ $test -eq 1 ]]; then
+    echo "[TEST] Kein Booking ausgeführt."
+    rm -f "$tmpfile"
+    exit 0
+  fi
 
-    selected = shown[choice - 1]
-    print()
-    print(f"Gewählt: {choice} -> {selected['offer_id']} / {selected['model']}")
-    if args.test:
-        print("[TEST] Kein Booking ausgeführt.")
-        sys.exit(0)
+  read -r -p "Buchung wirklich ausführen? [j/N]: " confirm
+  if [[ "${confirm,,}" != "j" ]]; then
+    echo "Abgebrochen."
+    rm -f "$tmpfile"
+    exit 0
+  fi
 
-    confirm = input("Buchung wirklich ausführen? [j/N]: ").strip().lower()
-    if confirm != "j":
-        print("Abgebrochen.")
-        sys.exit(0)
+  echo "[INFO] Booking würde hier ausgeführt werden."
+  rm -f "$tmpfile"
+}
 
-    print("[INFO] Booking würde hier ausgeführt werden.")
-    # hier deine echte Booking-Logik einfügen
-
-if __name__ == "__main__":
-    main()
+main "$@"
