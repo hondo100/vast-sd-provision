@@ -94,6 +94,20 @@ v2026-05-24.16b
   oder anders zurückkommen als erwartet.
 - Das muss künftig als eigener Problemfall behandelt werden.
 
+v2026-05-24.18
+- stdout/stderr der CLI-Suche werden zuerst getrennt in Dateien geschrieben und byteweise geprüft.
+- Ergebnis:
+  Leerfall, stderr-only-Fall und "kein JSON"-Fall lassen sich nun sauber unterscheiden.
+- Schluss:
+  Vor Parser- oder Ranking-Änderungen immer erst die Rohausgabe verifizieren.
+
+v2026-05-24.19
+- Wirtschaftlichkeitslogik erweitert um initiale Downloadkosten (20GB) und Storage-Kosten.
+- Ergebnis:
+  Bewertung ist näher an realen Betriebskosten als reine dph/dlperf-Sicht.
+- Schluss:
+  Für Modell-Hosting nicht nur Rechenpreis, sondern auch Daten-/Storage-Kosten berücksichtigen.
+
 ======================================================================
 D) NEUER PROBLEM-FALL AB v16b
 ======================================================================
@@ -163,30 +177,41 @@ F) BITTE BEI KÜNFTIGEN ÄNDERUNGEN BEACHTEN
 Kurzfazit:
 BEVORZUGTER STABILER PFAD:
   Vast CLI -> search offers --raw -> Rohausgabe prüfen -> JSON mit python3 parsen -> Bash-Ausgabe erzeugen
-
 SCRIPT_NOTES
 
-VERSION="2026-05-24.17"
+VERSION="2026-05-24.19"
 RESULTS=10
+MODEL_GB=20
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
-QUERY='external=false rentable=true verified=true'
+MIN_DISK_GB=40
+QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 SORT='dlperf_usd-'
 
 usage() {
-  echo "Usage: $0 [--test] [--dry-run]"
+  cat <<EOF
+Usage: $0 [--test] [--dry-run] [--diag] [--model-gb N] [--results N]
+
+Optionen:
+  --test         keine Buchung ausführen
+  --dry-run      nur anzeigen, keine Auswahl/Buchung
+  --diag         nur Diagnose der Roh-CLI-Ausgabe
+  --model-gb N   Modellgröße in GB (default: $MODEL_GB)
+  --results N    Anzahl anzuzeigender Treffer (default: $RESULTS)
+EOF
 }
 
-color_supported() {
-  [[ -t 1 ]]
-}
+color_supported() { [[ -t 1 ]]; }
 
 c() {
   local code="$1"; shift
   local text="$1"
-  if color_supported; then printf '\033[%sm%s\033[0m' "$code" "$text"; else printf '%s' "$text"; fi
+  if color_supported; then
+    printf '\033[%sm%s\033[0m' "$code" "$text"
+  else
+    printf '%s' "$text"
+  fi
 }
-
 green(){ c 32 "$1"; }
 yellow(){ c 33 "$1"; }
 blue(){ c 34 "$1"; }
@@ -205,24 +230,97 @@ vast_cmd() {
 }
 
 score_offer() {
-  local price="$1" dl="$2" rel="$3" vram="$4"
-  awk -v price="$price" -v dl="$dl" -v rel="$rel" -v vram="$vram" -v minv="$MIN_VRAM_GB" -v minr="$MIN_REL" '
-    BEGIN {
-      if (vram < minv || rel < minr) { print -1; exit }
-      price_score = 1.0 / (price > 0.0001 ? price : 0.0001)
-      vram_bonus = vram / 24.0
-      if (vram_bonus > 2.0) vram_bonus = 2.0
-      dl_bonus = dl / 100.0
-      print (price_score * 0.45) + (dl_bonus * 0.35) + (vram_bonus * 0.15) + (rel * 0.05)
-    }'
+  local eff_hour="$1" dl="$2" rel="$3" vram="$4"
+  python3 - "$eff_hour" "$dl" "$rel" "$vram" "$MIN_VRAM_GB" "$MIN_REL" <<'PY'
+import sys
+eff  = float(sys.argv[1])
+dl   = float(sys.argv[2])
+rel  = float(sys.argv[3])
+vram = float(sys.argv[4])
+minv = float(sys.argv[5])
+minr = float(sys.argv[6])
+
+if vram < minv or rel < minr:
+    print(-1.0)
+    raise SystemExit(0)
+
+eff = max(eff, 0.0001)
+price_score = 1.0 / eff
+vram_bonus = min(vram / 24.0, 2.0)
+dl_bonus = dl / 100.0
+
+score = (price_score * 0.50) + (dl_bonus * 0.30) + (vram_bonus * 0.15) + (rel * 0.05)
+print(f"{score:.6f}")
+PY
+}
+
+diag_raw() {
+  local out_file err_file rc out_bytes err_bytes
+  out_file="$(mktemp)"
+  err_file="$(mktemp)"
+
+  set +e
+  vast_cmd search offers --raw "$QUERY" -o "$SORT" >"$out_file" 2>"$err_file"
+  rc=$?
+  set -e
+
+  out_bytes="$(wc -c <"$out_file" | tr -d ' ')"
+  err_bytes="$(wc -c <"$err_file" | tr -d ' ')"
+
+  echo "[DIAG] RC=$rc"
+  echo "[DIAG] stdout bytes: $out_bytes"
+  echo "[DIAG] stderr bytes: $err_bytes"
+  echo
+
+  echo "[DIAG] stdout preview:"
+  head -c 1200 "$out_file" || true
+  echo
+  echo
+  echo "[DIAG] stderr preview:"
+  head -c 1200 "$err_file" || true
+  echo
+  echo
+
+  if [[ "$out_bytes" -eq 0 ]]; then
+    echo "[ERR] stdout ist leer. Problem liegt vor dem Parser."
+    echo "Pruefe Auth mit: vastai show user"
+    echo "Pruefe Hilfe mit: vastai search offers --help"
+    rm -f "$out_file" "$err_file"
+    return 1
+  fi
+
+  if ! python3 - "$out_file" <<'PY'
+import json, sys
+p = sys.argv[1]
+txt = open(p, "r", encoding="utf-8", errors="replace").read().strip()
+json.loads(txt)
+print("JSON_OK")
+PY
+  then
+    echo "[ERR] stdout enthaelt Daten, aber kein gueltiges JSON."
+    rm -f "$out_file" "$err_file"
+    return 1
+  fi
+
+  echo "[OK] --raw liefert JSON."
+  rm -f "$out_file" "$err_file"
 }
 
 main() {
-  local test=0 dry=0
+  local test=0 dry=0 diag=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --test) test=1 ;;
       --dry-run) dry=1 ;;
+      --diag) diag=1 ;;
+      --model-gb)
+        shift
+        MODEL_GB="${1:?Fehlender Wert fuer --model-gb}"
+        ;;
+      --results)
+        shift
+        RESULTS="${1:?Fehlender Wert fuer --results}"
+        ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
     esac
@@ -235,169 +333,28 @@ main() {
   fi
 
   echo "Skript-Version: $VERSION"
-  echo "[INFO] Suche Angebote..."
+  echo "[INFO] Suchquery: $QUERY"
+  echo "[INFO] Sortierung: $SORT"
+  echo "[INFO] Modellgroesse fuer initiale Beladung: ${MODEL_GB} GB"
   if [[ $test -eq 1 ]]; then echo "Modus: test"; else echo "Modus: live"; fi
-  echo "Legende:"
-  echo "  Grün  = bester GenAI-Score"
-  echo "  Gelb  = gute Balance aus Preis und Leistung"
-  echo "  Blau  = günstigste effektive Kosten"
-  echo "  Rot   = unter Mindestanforderungen"
   echo
 
-  raw="$(vast_cmd search offers --raw "$QUERY" -o "$SORT" 2>/dev/null || true)"
+  if [[ $diag -eq 1 ]]; then
+    diag_raw
+    exit $?
+  fi
 
-  if [[ -z "$raw" ]]; then
-    echo "[ERR] Keine --raw-Ausgabe erhalten." >&2
-    echo "Diagnose 1: vastai show user" >&2
-    echo "Diagnose 2: vastai search offers --raw '$QUERY' -o '$SORT' | head -c 1200" >&2
-    echo "Diagnose 3: vastai search offers --raw '$QUERY' -o '$SORT' > /tmp/vast_raw.out 2> /tmp/vast_raw.err" >&2
+  echo "[INFO] Auth-Check..."
+  if ! vast_cmd show user >/dev/null 2>&1; then
+    echo "[ERR] vast CLI nicht authentifiziert oder API-Key ungueltig." >&2
+    echo "Bitte pruefen mit: vastai show user" >&2
     exit 1
   fi
 
-  parsed="$(
-    RAW_JSON="$raw" python3 - "$RESULTS" <<'PY'
-import json
-import os
-import sys
+  local out_file err_file rc raw
+  out_file="$(mktemp)"
+  err_file="$(mktemp)"
 
-results = int(sys.argv[1])
-text = os.environ.get("RAW_JSON", "").strip()
-
-if not text:
-    sys.exit(0)
-
-try:
-    data = json.loads(text)
-except Exception:
-    sys.exit(0)
-
-if isinstance(data, dict):
-    if isinstance(data.get("offers"), list):
-        offers = data["offers"]
-    elif isinstance(data.get("rows"), list):
-        offers = data["rows"]
-    elif isinstance(data.get("results"), list):
-        offers = data["results"]
-    else:
-        offers = [data]
-elif isinstance(data, list):
-    offers = data
-else:
-    offers = []
-
-def first_num(d, keys, default=0.0):
-    for k in keys:
-        if k in d and d[k] not in (None, ""):
-            try:
-                return float(d[k])
-            except Exception:
-                pass
-    return float(default)
-
-def first_str(d, keys, default=""):
-    for k in keys:
-        if k in d and d[k] not in (None, ""):
-            return str(d[k])
-    return default
-
-rows = []
-for o in offers:
-    if not isinstance(o, dict):
-        continue
-
-    oid = first_str(o, ["id", "offer_id"])
-    model = first_str(o, ["gpu_name", "gpu", "model"], "unknown").replace("_", " ")
-
-    price = first_num(o, ["dph_total", "price", "hourly_price", "dph"], 0.0)
-    dlp = first_num(o, ["dlperf", "dl_performance", "dlp"], 0.0)
-    rel = first_num(o, ["reliability", "reliability2", "rel", "r"], 1.0)
-    vram = first_num(o, ["gpu_ram", "gpu_total_ram", "vram"], 0.0)
-    score = first_num(o, ["score"], 0.0)
-
-    if vram > 200:
-        vram = vram / 1024.0
-
-    status = first_str(o, ["verified", "status"], "True")
-    if status.lower() in ("true", "verified", "1"):
-        status = "True"
-
-    tx = 0.0
-    eff = price
-
-    if oid:
-        rows.append((oid, model, price, tx, eff, dlp, rel, vram, status, score))
-
-rows = rows[:results]
-
-for r in rows:
-    print("\t".join(map(str, r)))
-PY
-  )"
-
-  if [[ -z "$parsed" ]]; then
-    echo "[ERR] --raw wurde empfangen, aber das JSON-Format passte nicht zum Parser." >&2
-    echo "Bitte diese Diagnose ausführen:" >&2
-    echo "vastai search offers --raw '$QUERY' -o '$SORT' | head -c 1200" >&2
-    exit 1
-  fi
-
-  mapfile -t rows < <(printf '%s\n' "$parsed")
-
-  printf '%-3s %-10s %-18s %7s %8s %8s %8s %7s %8s %5s %6s\n' "Nr" "Offer_ID" "Model" "\$/hr" "20GB Tx" "Eff$/h" "DLPerf" "Score" "VRAM GB" "Rel" "Status"
-  printf '%s\n' "--------------------------------------------------------------------------------------------------------"
-
-  limit=$(( RESULTS < ${#rows[@]} ? RESULTS : ${#rows[@]} ))
-  for ((i=0; i<limit; i++)); do
-    IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${rows[$i]}"
-    score2="$(score_offer "$price" "$dl" "$rel" "$vram")"
-    [[ "$score" == "0" || "$score" == "0.0" ]] && score="$score2"
-    line=$(printf '%-3s %-10s %-18s %7.4f %8.4f %8.4f %8.1f %7.1f %8.1f %5.2f %6s' \
-      "$((i+1))" "$oid" "$model" "$price" "$tx" "$eff" "$dl" "$score" "$vram" "$rel" "$status")
-    case "$i" in
-      0) green "$line" ;;
-      1|2) yellow "$line" ;;
-      3|4) blue "$line" ;;
-      *) printf '%s' "$line" ;;
-    esac
-    printf '\n'
-  done
-
-  IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${rows[0]}"
-  echo
-  echo "Vorschlag: Nummer 1 ($oid / $model)"
-
-  if [[ $dry -eq 1 ]]; then
-    exit 0
-  fi
-
-  choice=""
-  while [[ -z "$choice" ]]; do
-    read -r -p "Welche Nummer buchen? [1-$limit] (Enter = 1): " raw
-    if [[ -z "$raw" ]]; then
-      choice=1
-    elif [[ "$raw" =~ ^[0-9]+$ ]] && (( raw >= 1 && raw <= limit )); then
-      choice="$raw"
-    else
-      echo "Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben."
-    fi
-  done
-
-  IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${rows[$((choice-1))]}"
-  echo
-  echo "Gewählt: $choice -> $oid / $model"
-
-  if [[ $test -eq 1 ]]; then
-    echo "[TEST] Kein Booking ausgeführt."
-    exit 0
-  fi
-
-  read -r -p "Buchung wirklich ausführen? [j/N]: " confirm
-  if [[ "${confirm,,}" != "j" ]]; then
-    echo "Abgebrochen."
-    exit 0
-  fi
-
-  echo "[INFO] Booking würde hier ausgeführt werden."
-}
-
-main "$@"
+  echo "[INFO] Suche Angebote..."
+  set +e
+  vast_cmd search offers --raw "$QUERY" 
