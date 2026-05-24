@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.24"
+VERSION="2026-05-24.25"
 
 : <<'SCRIPT_OVERVIEW'
 ========================================================================
@@ -49,7 +49,11 @@ Such- und Bewertungsparameter
   Standard: 3
 
 - --results N
-  Anzahl der anzuzeigenden Treffer. Standard: 10
+  Anzahl der final anzuzeigenden geeigneten Treffer. Standard: 10
+
+- --search-limit N
+  Anzahl der Rohangebote, die von Vast geladen werden, bevor lokal
+  gefiltert und sortiert wird. Standard: 60
 
 Interaktives Verhalten
 - Das Skript macht nur einen Vorschlag fuer die wirtschaftlichste
@@ -66,10 +70,13 @@ Beispiele
 
 - JSON-Debug:
     bash ./find-cheapest-instance.sh --dry-run --debug-json 2>/tmp/vast_debug.err
-    sed -n '1,120p' /tmp/vast_debug.err
+    sed -n '1,160p' /tmp/vast_debug.err
 
 - Eigene Sitzungsdauer:
-    bash ./find-cheapest-instance.sh --session-hours 2 --results 15
+    bash ./find-cheapest-instance.sh --session-hours 2 --results 12
+
+- Mehr Rohangebote laden:
+    bash ./find-cheapest-instance.sh --search-limit 100 --results 15
 
 ========================================================================
 GEWONNENE ERKENNTNISSE / LESSONS LEARNED
@@ -122,8 +129,7 @@ GEWONNENE ERKENNTNISSE / LESSONS LEARNED
 - 20GB Modellgroesse bedeutet in der Praxis nicht, dass exakt 20GB VRAM
   genuegen.
 - 24GB VRAM als Mindestschwelle ist ein sinnvoller Startwert.
-- Angebote unterhalb der Schwelle werden im Score als ungeeignet
-  markiert.
+- Angebote unterhalb der Schwelle werden als ungeeignet ausgeschlossen.
 
 7) Auswahlhilfe statt Auto-Buchung
 - Das Skript soll einen Vorschlag machen, aber nicht automatisch buchen.
@@ -155,14 +161,23 @@ GEWONNENE ERKENNTNISSE / LESSONS LEARNED
   sondern auf die angenommene Sitzungsdauer umgelegt.
 - Dadurch werden Kurzsitzungen realistischer bewertet.
 
+11) Mehr Rohangebote laden, lokal ungeeignete eliminieren
+- Es ist sinnvoller, mehr Rohangebote von Vast zu laden und danach lokal
+  ungeeignete Treffer auszuschliessen, als nur wenige Treffer zu laden
+  und ungeeignete Kandidaten in der Endliste stehen zu lassen.
+- Dadurch steigt die Chance, dass unter den final angezeigten Treffern
+  wirklich nur brauchbare und wirtschaftliche Optionen erscheinen.
+
 Kurzfazit
 - Nicht Tabellen parsen.
 - Nicht rohe Bundles-API priorisieren.
 - Erst Rohdaten pruefen, dann Parser anpassen.
+- Mehr Rohangebote laden, lokal ungeeignete eliminieren.
 - Auswahl im Skript, Buchung bewusst im Vast-UI mit passendem Template.
 SCRIPT_OVERVIEW
 
 RESULTS=10
+SEARCH_LIMIT=60
 MODEL_GB=20
 SESSION_HOURS=3
 MIN_VRAM_GB=24.0
@@ -177,7 +192,7 @@ SORT='dlperf_usd-'
 usage() {
   cat <<EOF
 Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N]
-          [--model-gb N] [--session-hours N] [--results N]
+          [--model-gb N] [--session-hours N] [--results N] [--search-limit N]
 EOF
 }
 
@@ -329,7 +344,7 @@ diag_raw() {
   err_file="$(mktemp)"
 
   set +e
-  vast_cmd search offers --raw "$QUERY" -o "$SORT" --limit "$RESULTS" >"$out_file" 2>"$err_file"
+  vast_cmd search offers --raw "$QUERY" -o "$SORT" --limit "$SEARCH_LIMIT" >"$out_file" 2>"$err_file"
   rc=$?
   set -e
 
@@ -412,6 +427,10 @@ main() {
         shift
         RESULTS="${1:?Fehlender Wert fuer --results}"
         ;;
+      --search-limit)
+        shift
+        SEARCH_LIMIT="${1:?Fehlender Wert fuer --search-limit}"
+        ;;
       -h|--help)
         usage
         exit 0
@@ -436,6 +455,8 @@ main() {
   echo "[INFO] Tabellensortierung lokal: Score absteigend"
   echo "[INFO] Modellgroesse fuer initiale Beladung: ${MODEL_GB} GB"
   echo "[INFO] Angenommene Sitzungsdauer: ${SESSION_HOURS} h"
+  echo "[INFO] Anzahl Rohangebote von Vast: ${SEARCH_LIMIT}"
+  echo "[INFO] Anzahl final angezeigter Angebote: ${RESULTS}"
   echo "[INFO] Ziel-Workflow: Auswahl im Skript, Buchung danach im Vast-UI mit Template (z. B. SD WebUI Forge)"
   if [[ $test -eq 1 ]]; then
     echo "Modus: test"
@@ -465,7 +486,7 @@ main() {
 
   echo "[INFO] Suche Angebote..."
   set +e
-  vast_cmd search offers --raw "$QUERY" -o "$SORT" --limit "$RESULTS" >"$out_file" 2>"$err_file"
+  vast_cmd search offers --raw "$QUERY" -o "$SORT" --limit "$SEARCH_LIMIT" >"$out_file" 2>"$err_file"
   rc=$?
   set -e
 
@@ -495,14 +516,16 @@ main() {
 
   parsed="$(
     RAW_JSON="$raw" DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" \
-    python3 - "$RESULTS" "$MODEL_GB" "$SESSION_HOURS" <<'PY'
+    python3 - "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" <<'PY'
 import json
 import os
 import sys
 
-results = int(sys.argv[1])
+search_limit = int(sys.argv[1])
 model_gb = float(sys.argv[2])
 session_hours = float(sys.argv[3])
+min_vram_gb = float(sys.argv[4])
+min_rel = float(sys.argv[5])
 debug_json = int(os.environ.get("DEBUG_JSON", "0"))
 debug_limit = int(os.environ.get("DEBUG_JSON_LIMIT", "2"))
 text = os.environ.get("RAW_JSON", "").strip()
@@ -559,7 +582,7 @@ if debug_json:
             print(f"#DEBUG offer[{idx}] type={type(offer).__name__} value={repr(offer)[:1000]}", file=sys.stderr)
 
 rows = []
-for o in offers:
+for o in offers[:search_limit]:
     if not isinstance(o, dict):
         continue
 
@@ -581,6 +604,13 @@ for o in offers:
 
     if vram > 200:
         vram = vram / 1024.0
+
+    # Lokale Eliminierung ungeeigneter Angebote:
+    # Diese Kandidaten sollen gar nicht erst in die finale Tabelle.
+    if vram < min_vram_gb:
+        continue
+    if rel < min_rel:
+        continue
 
     initial_load_cost = model_gb * inet_down_cost
     monthly_model_storage = model_gb * storage_cost
@@ -605,8 +635,6 @@ for o in offers:
         "verified": verified,
     })
 
-rows = rows[:results]
-
 for r in rows:
     print("\t".join([
         str(r["oid"]),
@@ -630,8 +658,8 @@ PY
   )"
 
   if [[ -z "$parsed" ]]; then
-    echo "[ERR] --raw wurde empfangen, aber das JSON-Format passte nicht zum Parser." >&2
-    echo "Bitte zuerst Diagnose ausführen: $0 --diag" >&2
+    echo "[ERR] Keine geeigneten Angebote nach lokalem Filter vorhanden." >&2
+    echo "[HINWEIS] SEARCH_LIMIT erhoehen oder Filter lockern." >&2
     exit 1
   fi
 
@@ -641,32 +669,29 @@ PY
   echo "  Grün  = bester GenAI-Score"
   echo "  Gelb  = gute Balance"
   echo "  Blau  = günstig"
-  echo "  Rot   = unter Mindestanforderungen"
+  echo "  Rot   = wird im Normalbetrieb nicht mehr angezeigt, da ungeeignete Angebote vorher ausgeschlossen werden"
   echo
-
-  local limit
-  limit=$(( RESULTS < ${#rows[@]} ? RESULTS : ${#rows[@]} ))
-
-  if [[ "$limit" -le 0 ]]; then
-    echo "[ERR] Keine Angebote nach dem Parsen vorhanden."
-    exit 1
-  fi
 
   local scored_rows=()
   local i
   local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified score line
 
-  for ((i=0; i<limit; i++)); do
+  for ((i=0; i<${#rows[@]}; i++)); do
     IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg")"
     scored_rows+=("${score}"$'\t'"${rows[$i]}")
   done
 
   mapfile -t rows < <(
-    printf '%s\n' "${scored_rows[@]}" | sort -t $'\t' -k1,1gr | cut -f2-
+    printf '%s\n' "${scored_rows[@]}" | sort -t $'\t' -k1,1gr | cut -f2- | head -n "$RESULTS"
   )
 
-  limit=${#rows[@]}
+  local limit=${#rows[@]}
+  if [[ "$limit" -le 0 ]]; then
+    echo "[ERR] Nach Score-Sortierung sind keine finalen Angebote uebrig geblieben." >&2
+    exit 1
+  fi
+
   local best_idx=0
 
   printf '%-3s %-10s %-18s %4s %7s %8s %8s %8s %9s %8s %6s %7s %6s\n' \
@@ -680,20 +705,12 @@ PY
     line=$(printf '%-3s %-10s %-18s %4.0f %7.4f %8.4f %8.4f %8.1f %9.3f %8.1f %6.2f %7.0f %6.2f' \
       "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$dl" "$dlu" "$vram" "$rel" "$ports" "$score")
 
-    if python3 - "$score" <<'PY'
-import sys
-sys.exit(0 if float(sys.argv[1]) < 0 else 1)
-PY
-    then
-      red "$line"
-    else
-      case "$i" in
-        0) green "$line" ;;
-        1|2) yellow "$line" ;;
-        3|4) blue "$line" ;;
-        *) printf '%s' "$line" ;;
-      esac
-    fi
+    case "$i" in
+      0) green "$line" ;;
+      1|2) yellow "$line" ;;
+      3|4) blue "$line" ;;
+      *) printf '%s' "$line" ;;
+    esac
     printf '\n'
   done
 
@@ -710,6 +727,10 @@ PY
   echo "[HINWEIS] Dieses Skript bucht nicht automatisch."
   echo "[HINWEIS] Nutze die Offer-ID $oid im Vast-Webinterface und waehle dort dein Template,"
   echo "          z. B. 'SD WebUI Forge'."
+
+  if [[ $dry -eq 1 ]]; then
+    exit 0
+  fi
 }
 
 main "$@"
