@@ -117,6 +117,10 @@ vast_cmd() {
   fi
 }
 
+fmt2() {
+  printf '%.2f' "${1:-0}"
+}
+
 score_offer() {
   local eff_hour="$1"
   local dl="$2"
@@ -554,7 +558,7 @@ PY
     IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
 
-    line=$(printf '%-3s %-10s %-16s %4.0f %7.4f %8.4f %8.4f %7.0f %7s %7s %8.1f %6.2f' \
+    line=$(printf '%-3s %-10s %-16s %4.0f %7.2f %8.2f %8.2f %7.0f %7s %7s %8.1f %6.2f' \
       "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min_r" "$est_ready_min_r" "$vram" "$score")
 
     case "$i" in
@@ -570,14 +574,14 @@ PY
 
   echo
   echo "Vorschlag: Nummer $((best_idx+1)) ($oid / $model)"
-  echo "  - Stundenpreis: ${price} $/h"
-  echo "  - Initiale 20GB-Beladung: ${tx} $"
-  echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: ${eff} $/h"
-  echo "  - Downloadrate: ${inet_down} Mb/s"
+  echo "  - Stundenpreis: $(fmt2 "$price") $/h"
+  echo "  - Initiale 20GB-Beladung: $(fmt2 "$tx") $"
+  echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: $(fmt2 "$eff") $/h"
+  echo "  - Downloadrate: $(fmt2 "$inet_down") Mb/s"
   echo "  - Geschaetzte 20GB-Downloadzeit: ${est_dl_min_r} min"
   echo "  - Geschaetzte Bereitstellung: ${est_ready_min_r} min"
-  echo "  - Monatliche Storage-Kosten fuer 20GB: ${month} $/Monat"
-  echo "  - DLPerf: ${dl}, DLPerf/\$: ${dlu}, VRAM: ${vram} GB, Ports: ${ports}"
+  echo "  - Monatliche Storage-Kosten fuer 20GB: $(fmt2 "$month") $/Monat"
+  echo "  - DLPerf: $(fmt2 "$dl"), DLPerf/\$: $(fmt2 "$dlu"), VRAM: $(fmt2 "$vram") GB, Ports: $(fmt2 "$ports")"
   echo
 
   if [[ $dry -eq 1 ]]; then
