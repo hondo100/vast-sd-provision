@@ -5,6 +5,7 @@ TEMPLATE_HASH="b1fa2e3cff64f518ea3c8ab74fc03607"
 RESULTS=10
 DRY_RUN=0
 MODE="prod"
+SORT="dlperf_usd-"
 
 for arg in "$@"; do
   case "$arg" in
@@ -29,10 +30,10 @@ echo
 
 case "$MODE" in
   prod)
-    QUERY='gpu_ram>24 reliability>0.98 num_gpus=1 rented=False verified=True score>0'
+    QUERY='gpu_ram>24 reliability>0.98 num_gpus=1 rented=False verified=True rentable=true direct_port_count>=1 score>0'
     ;;
   test)
-    QUERY='gpu_ram>16 reliability>0.95 num_gpus=1 rented=False verified=True score>0'
+    QUERY='gpu_ram>16 reliability>0.95 num_gpus=1 rented=False verified=True rentable=true direct_port_count>=1 score>0'
     ;;
   *)
     echo "Ungueltiger Modus: $MODE"
@@ -40,16 +41,17 @@ case "$MODE" in
     ;;
 esac
 
-RAW="$(vastai search offers "$QUERY" --raw)"
+RAW="$(vastai search offers "$QUERY" --raw -o "$SORT")"
 
 python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$TEMPLATE_HASH" <<'PY' <<<"$RAW"
-import sys, json, subprocess, re
+import sys, json, subprocess
 
 MODE = sys.argv[1]
 RESULTS = int(sys.argv[2])
 DRY_RUN = sys.argv[3] == '1'
 TEMPLATE_HASH = sys.argv[4]
 raw = sys.stdin.read().strip()
+
 if not raw:
     print('Keine Daten empfangen.')
     sys.exit(1)
@@ -65,6 +67,7 @@ def parse_rows(payload):
                     return data[key]
     except Exception:
         pass
+
     rows = []
     lines = payload.splitlines()
     header_idx = None
@@ -75,6 +78,7 @@ def parse_rows(payload):
             break
     if header_idx is None:
         return rows
+
     for line in lines[header_idx + 1:]:
         s = line.strip()
         if not s:
@@ -137,7 +141,7 @@ if not parsed:
     print('Keine Angebote konnten geparst werden.')
     sys.exit(1)
 
-parsed.sort(key=lambda r: (r['score'], r['price']))
+parsed.sort(key=lambda r: (-r['dlp_usd'], -r['rel'], r['price']))
 
 print(f'Modus: {MODE}')
 print('Nr  Offer_ID    Model               $/hr     DLP    DLP/$   Score   Rel    Status')
