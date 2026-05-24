@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.22"
+VERSION="2026-05-24.23"
 
 : <<'SCRIPT_OVERVIEW'
 ========================================================================
@@ -152,6 +152,16 @@ GEWONNENE ERKENNTNISSE / LESSONS LEARNED
     vastai stop instance INSTANCE_ID
     vastai destroy instance INSTANCE_ID
 
+9) Bewertungssystem auf interaktives Arbeiten ausgerichtet
+- Dieses Skript optimiert NICHT auf maximalen Batch-Durchsatz.
+- Ziel ist längeres manuelles Arbeiten an einzelnen Bildern oder Videos.
+- Deshalb werden niedrige Stundenpreise stärker gewichtet als rohe
+  Spitzenleistung.
+- Ausreichender VRAM und gute Reliability sind wichtiger als extreme
+  Mehrleistung.
+- Multi-GPU-Angebote werden leicht abgestraft, wenn sie fuer den Use
+  Case voraussichtlich nur Mehrkosten statt echten Nutzen bringen.
+
 Kurzfazit
 - Nicht Tabellen parsen.
 - Nicht rohe Bundles-API priorisieren.
@@ -177,10 +187,6 @@ ENABLE_SSH="${ENABLE_SSH:-1}"
 ENABLE_DIRECT="${ENABLE_DIRECT:-1}"
 
 usage() {
-  sed -n '/^SCRIPT ARGUMENTS \/ OPTIONEN$/,/^========================================================================$/p' <(
-    sed '1,/^SCRIPT_OVERVIEW$/d' "$0" 2>/dev/null || true
-  ) >/dev/null 2>&1 || true
-
   cat <<EOF
 Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N] [--model-gb N] [--results N]
           [--image IMAGE] [--disk-gb N] [--onstart-cmd CMD] [--no-ssh] [--no-direct]
@@ -219,32 +225,111 @@ vast_cmd() {
   fi
 }
 
+# ----------------------------------------------------------------------
+# Bewertungssystem / Scoring-Modell
+#
+# Zielprofil dieses Skripts:
+# - keine Batch- oder Massendurchsatz-Optimierung
+# - stattdessen längeres manuelles/interaktives Arbeiten an einzelnen
+#   Bildern oder Videos
+# - deshalb ist ein niedriger Stundenpreis wichtiger als maximale rohe
+#   DL-Leistung
+#
+# Bewertungsprinzipien:
+# 1) Harte Ausschlusskriterien:
+#    - VRAM < MIN_VRAM_GB      -> ungeeignet
+#    - Reliability < MIN_REL  -> ungeeignet
+#
+# 2) Hohe Gewichtung auf niedrige effektive Stundenkosten:
+#    - eff_hour = GPU-Kosten plus auf 24h umgelegte initiale
+#      Downloadkosten des Modells
+#    - Je niedriger eff_hour, desto besser
+#
+# 3) VRAM nur bis zu einer sinnvollen Reserve belohnen:
+#    - 24 GB ist Mindestschwelle
+#    - 24-32 GB ist gut
+#    - 32-48 GB ist komfortabel
+#    - deutlich mehr VRAM bringt fuer diesen Use Case nur noch kleinen
+#      Zusatznutzen
+#
+# 4) Reliability wichtig:
+#    - Fuer längeres manuelles Arbeiten ist Stabilität wichtiger als eine
+#      kleine zusätzliche Benchmark-Leistung
+#
+# 5) Multi-GPU-Malus:
+#    - 2+ GPUs sind für diesen interaktiven Use Case oft teurer als nötig
+#    - Deshalb werden Mehr-GPU-Angebote leicht abgestraft
+#
+# 6) DLPerf / DLPerf pro Dollar nur schwach bis moderat gewichten:
+#    - Leistung zählt weiterhin
+#    - aber deutlich schwächer als Preis, VRAM-Eignung und Stability
+#
+# Interpretation:
+# - Score ist ein lokaler Vergleichswert nur innerhalb dieser Ergebnisliste
+# - Höher = besser für dieses Nutzungsszenario
+# - -1 = unter Mindestanforderungen / ungeeignet
+# ----------------------------------------------------------------------
 score_offer() {
   local eff_hour="$1"
   local dl="$2"
-  local rel="$3"
-  local vram="$4"
+  local dlu="$3"
+  local rel="$4"
+  local vram="$5"
+  local numg="$6"
 
-  python3 - "$eff_hour" "$dl" "$rel" "$vram" "$MIN_VRAM_GB" "$MIN_REL" <<'PY'
+  python3 - "$eff_hour" "$dl" "$dlu" "$rel" "$vram" "$numg" "$MIN_VRAM_GB" "$MIN_REL" <<'PY'
+import math
 import sys
 
-eff  = float(sys.argv[1])
-dl   = float(sys.argv[2])
-rel  = float(sys.argv[3])
-vram = float(sys.argv[4])
-minv = float(sys.argv[5])
-minr = float(sys.argv[6])
+eff  = float(sys.argv[1])   # effektive Kosten pro Stunde
+dl   = float(sys.argv[2])   # rohe DLPerf
+dlu  = float(sys.argv[3])   # DLPerf pro Dollar
+rel  = float(sys.argv[4])   # Reliability
+vram = float(sys.argv[5])   # VRAM in GB
+numg = float(sys.argv[6])   # Anzahl GPUs
+minv = float(sys.argv[7])   # Mindest-VRAM
+minr = float(sys.argv[8])   # Mindest-Reliability
 
 if vram < minv or rel < minr:
     print(-1.0)
     raise SystemExit(0)
 
-eff = max(eff, 0.0001)
-price_score = 1.0 / eff
-vram_bonus = min(vram / 24.0, 2.0)
-dl_bonus = dl / 100.0
+cost_score = 1.0 / max(eff, 0.0001)
 
-score = (price_score * 0.50) + (dl_bonus * 0.30) + (vram_bonus * 0.15) + (rel * 0.05)
+if vram < 24:
+    vram_score = 0.0
+elif vram <= 28:
+    vram_score = 0.75
+elif vram <= 32:
+    vram_score = 0.95
+elif vram <= 48:
+    vram_score = 1.10
+elif vram <= 80:
+    vram_score = 1.18
+else:
+    vram_score = 1.22
+
+rel_score = rel * rel
+dl_score = math.log(max(dl, 1.0))
+dlu_score = math.log(max(dlu, 1.0))
+
+if numg <= 1:
+    gpu_penalty = 1.00
+elif numg <= 2:
+    gpu_penalty = 0.82
+elif numg <= 4:
+    gpu_penalty = 0.68
+else:
+    gpu_penalty = 0.55
+
+score = (
+    cost_score * 0.58 +
+    vram_score * 0.17 +
+    rel_score  * 0.15 +
+    dlu_score  * 0.06 +
+    dl_score   * 0.04
+) * gpu_penalty
+
 print(f"{score:.6f}")
 PY
 }
@@ -459,7 +544,8 @@ main() {
 
   echo "Skript-Version: $VERSION"
   echo "[INFO] Suchquery: $QUERY"
-  echo "[INFO] Sortierung: $SORT"
+  echo "[INFO] Sortierung (Vast-Vorfilter): $SORT"
+  echo "[INFO] Tabellensortierung lokal: Score absteigend"
   echo "[INFO] Modellgroesse fuer initiale Beladung: ${MODEL_GB} GB"
   echo "[INFO] Booking-Image: $IMAGE"
   echo "[INFO] Booking-Disk: ${DISK_GB} GB"
@@ -673,10 +759,6 @@ PY
   echo "  Rot   = unter Mindestanforderungen"
   echo
 
-  printf '%-3s %-10s %-16s %4s %7s %8s %8s %8s %9s %8s %6s %7s %6s\n' \
-    "Nr" "Offer_ID" "Model" "GPUx" "$/hr" "20GB Tx" "Eff$/h" "DLPerf" "DLP/\$" "VRAMGB" "Rel" "Ports" "Score"
-  printf '%s\n' "----------------------------------------------------------------------------------------------------------------"
-
   local limit
   limit=$(( RESULTS < ${#rows[@]} ? RESULTS : ${#rows[@]} ))
 
@@ -685,24 +767,30 @@ PY
     exit 1
   fi
 
-  local best_idx=0
-  local best_score="-999999"
+  local scored_rows=()
   local i
   local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified score line
 
   for ((i=0; i<limit; i++)); do
     IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$i]}"
+    score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg")"
+    scored_rows+=("${score}"$'\t'"${rows[$i]}")
+  done
 
-    score="$(score_offer "$eff" "$dl" "$rel" "$vram")"
+  mapfile -t rows < <(
+    printf '%s\n' "${scored_rows[@]}" | sort -t $'\t' -k1,1gr | cut -f2-
+  )
 
-    if python3 - "$score" "$best_score" <<'PY'
-import sys
-sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)
-PY
-    then
-      best_score="$score"
-      best_idx="$i"
-    fi
+  limit=${#rows[@]}
+  local best_idx=0
+
+  printf '%-3s %-10s %-16s %4s %7s %8s %8s %8s %9s %8s %6s %7s %6s\n' \
+    "Nr" "Offer_ID" "Model" "GPUx" "\$/hr" "20GB Tx" "Eff\$/h" "DLPerf" "DLP/\$" "VRAMGB" "Rel" "Ports" "Score"
+  printf '%s\n' "----------------------------------------------------------------------------------------------------------------"
+
+  for ((i=0; i<limit; i++)); do
+    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$i]}"
+    score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg")"
 
     line=$(printf '%-3s %-10s %-16s %4.0f %7.4f %8.4f %8.4f %8.1f %9.3f %8.1f %6.2f %7.0f %6.2f' \
       "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$dl" "$dlu" "$vram" "$rel" "$ports" "$score")
@@ -714,15 +802,12 @@ PY
     then
       red "$line"
     else
-      if [[ "$i" -eq "$best_idx" ]]; then
-        green "$line"
-      elif [[ "$i" -le 2 ]]; then
-        yellow "$line"
-      elif [[ "$i" -le 4 ]]; then
-        blue "$line"
-      else
-        printf '%s' "$line"
-      fi
+      case "$i" in
+        0) green "$line" ;;
+        1|2) yellow "$line" ;;
+        3|4) blue "$line" ;;
+        *) printf '%s' "$line" ;;
+      esac
     fi
     printf '\n'
   done
