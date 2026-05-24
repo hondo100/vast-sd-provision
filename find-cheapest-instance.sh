@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.30"
+VERSION="2026-05-24.31"
 
 # ============================================================================
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -42,11 +42,11 @@ ZWECK
 ========================================================================
 - Dieses Skript sucht wirtschaftliche Vast-Angebote fuer ca. 20GB-Modelle.
 - Es kann nach Benutzerauswahl OPTIONAL direkt buchen.
-- Es bewertet nun zusaetzlich die geschaetzte Downloadzeit fuer 20GB
+- Es bewertet zusaetzlich die geschaetzte Downloadzeit fuer 20GB
   sowie die geschaetzte Gesamt-Bereitstellungszeit.
 
 ========================================================================
-WICHTIGE ERKENNTNISSE
+WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
 ========================================================================
 1) Vast CLI + --raw ist der bevorzugte Suchpfad.
 2) Tabellen-Parsing vermeiden, JSON bevorzugen.
@@ -54,12 +54,18 @@ WICHTIGE ERKENNTNISSE
 4) Grosse JSON-Daten nie per Environment-Variable an Python uebergeben.
 5) Fuer ~20GB-Modelle ist 24GB VRAM eine sinnvolle Mindestschwelle.
 6) Downloadgeschwindigkeit (`inet_down`) ist fuer die tatsaechliche
-   Time-to-Ready relevant und soll in Bewertung und Tabelle einfliessen.
-7) Template-Buchung bedeutet:
+   Time-to-Ready relevant und fliesst in Bewertung und Tabelle ein.
+7) Die angezeigte Bereitstellungszeit ist eine SCHAETZUNG:
+   - aus inet_down (Mb/s),
+   - multipliziert mit einem Effizienzfaktor,
+   - plus fixem Boot-/Init-Overhead.
+8) `reliability` wird weiter intern im Score verwendet, aber nicht
+   mehr in der Tabelle angezeigt.
+9) Template-Buchung bedeutet:
    - Offer-ID bleibt Pflicht
    - template_hash liefert die Basiskonfiguration
    - disk sollte explizit gesetzt werden
-8) Nach jedem groesseren Edit:
+10) Nach jedem groesseren Edit:
       bash -n ./find-cheapest-instance.sh
 SCRIPT_OVERVIEW
 
@@ -159,8 +165,6 @@ rel_score = rel * rel
 dl_score = math.log(max(dl, 1.0))
 dlu_score = math.log(max(dlu, 1.0))
 net_score = math.log(max(dl_mbps, 1.0))
-
-# Schnelle Bereitstellung belohnen, lange Ready-Zeit abstrafen.
 ready_penalty = 1.0 / max(ready_min, 1.0)
 
 if numg <= 1:
@@ -446,11 +450,13 @@ for o in offers[:search_limit]:
     monthly_model_storage = model_gb * storage_cost
     eff_hour = price + (initial_load_cost / max(session_hours, 0.1))
 
-    # inet_down ist laut Vast in Mb/s
     effective_mbps = max(inet_down * download_efficiency, 0.001)
     model_megabits = model_gb * 1024.0 * 8.0
     est_model_dl_min = model_megabits / effective_mbps / 60.0
     est_ready_min = est_model_dl_min + boot_overhead_min
+
+    est_model_dl_min_rounded = int(round(est_model_dl_min))
+    est_ready_min_rounded = int(round(est_ready_min))
 
     rows.append({
         "oid": oid,
@@ -471,6 +477,8 @@ for o in offers[:search_limit]:
         "verified": verified,
         "est_model_dl_min": est_model_dl_min,
         "est_ready_min": est_ready_min,
+        "est_model_dl_min_rounded": est_model_dl_min_rounded,
+        "est_ready_min_rounded": est_ready_min_rounded,
     })
 
 for r in rows:
@@ -492,6 +500,8 @@ for r in rows:
         f'{r["direct_ports"]:.6f}',
         f'{r["est_model_dl_min"]:.6f}',
         f'{r["est_ready_min"]:.6f}',
+        str(r["est_model_dl_min_rounded"]),
+        str(r["est_ready_min_rounded"]),
         str(r["verified"]),
     ]))
 PY
@@ -516,10 +526,10 @@ PY
 
   local -a scored_rows=()
   local i
-  local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified score line
+  local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score line
 
   for ((i=0; i<${#rows[@]}; i++)); do
-    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified <<< "${rows[$i]}"
+    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
     scored_rows+=("${score}"$'\t'"${rows[$i]}")
   done
@@ -536,16 +546,16 @@ PY
 
   local best_idx=0
 
-  printf '%-3s %-10s %-16s %4s %7s %8s %8s %7s %7s %7s %8s %6s %6s\n' \
-    "Nr" "Offer_ID" "Model" "GPUx" "\$/hr" "20GBTx" "Eff\$/h" "DLMb/s" "20GBm" "Readym" "VRAMGB" "Rel" "Score"
-  printf '%s\n' "---------------------------------------------------------------------------------------------------------------"
+  printf '%-3s %-10s %-16s %4s %7s %8s %8s %7s %7s %7s %8s %6s\n' \
+    "Nr" "Offer_ID" "Model" "GPUx" "\$/hr" "20GBTx" "Eff\$/h" "DLMb/s" "20GBm" "Readym" "VRAMGB" "Score"
+  printf '%s\n' "----------------------------------------------------------------------------------------------------------"
 
   for ((i=0; i<limit; i++)); do
-    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified <<< "${rows[$i]}"
+    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
 
-    line=$(printf '%-3s %-10s %-16s %4.0f %7.4f %8.4f %8.4f %7.0f %7.1f %7.1f %8.1f %6.2f %6.2f' \
-      "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min" "$est_ready_min" "$vram" "$rel" "$score")
+    line=$(printf '%-3s %-10s %-16s %4.0f %7.4f %8.4f %8.4f %7.0f %7s %7s %8.1f %6.2f' \
+      "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min_r" "$est_ready_min_r" "$vram" "$score")
 
     case "$i" in
       0) green "$line" ;;
@@ -556,7 +566,7 @@ PY
     printf '\n'
   done
 
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified <<< "${rows[$best_idx]}"
+  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$best_idx]}"
 
   echo
   echo "Vorschlag: Nummer $((best_idx+1)) ($oid / $model)"
@@ -564,10 +574,10 @@ PY
   echo "  - Initiale 20GB-Beladung: ${tx} $"
   echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: ${eff} $/h"
   echo "  - Downloadrate: ${inet_down} Mb/s"
-  echo "  - Geschaetzte 20GB-Downloadzeit: ${est_dl_min} min"
-  echo "  - Geschaetzte Bereitstellung: ${est_ready_min} min"
+  echo "  - Geschaetzte 20GB-Downloadzeit: ${est_dl_min_r} min"
+  echo "  - Geschaetzte Bereitstellung: ${est_ready_min_r} min"
   echo "  - Monatliche Storage-Kosten fuer 20GB: ${month} $/Monat"
-  echo "  - DLPerf: ${dl}, DLPerf/\$: ${dlu}, VRAM: ${vram} GB, Reliability: ${rel}, Ports: ${ports}"
+  echo "  - DLPerf: ${dl}, DLPerf/\$: ${dlu}, VRAM: ${vram} GB, Ports: ${ports}"
   echo
 
   if [[ $dry -eq 1 ]]; then
@@ -587,12 +597,12 @@ PY
     fi
   done
 
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified <<< "${rows[$((choice-1))]}"
+  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$((choice-1))]}"
 
   echo
   echo "Gewählt: $choice -> $oid / $model"
-  echo "  - Erwartete 20GB-Downloadzeit: ${est_dl_min} min"
-  echo "  - Erwartete Gesamt-Bereitstellung: ${est_ready_min} min"
+  echo "  - Erwartete 20GB-Downloadzeit: ${est_dl_min_r} min"
+  echo "  - Erwartete Gesamt-Bereitstellung: ${est_ready_min_r} min"
 
   if [[ $DO_BOOK -ne 1 ]]; then
     echo "[HINWEIS] Keine automatische Buchung aktiviert."
@@ -611,8 +621,8 @@ PY
   echo "  Modell/GPU:    $model"
   echo "  Template Hash: $TEMPLATE_HASH"
   echo "  Disk:          ${DISK_GB} GB"
-  echo "  ETA 20GB DL:   ${est_dl_min} min"
-  echo "  ETA Ready:     ${est_ready_min} min"
+  echo "  ETA 20GB DL:   ${est_dl_min_r} min"
+  echo "  ETA Ready:     ${est_ready_min_r} min"
   echo
   read -r -p "Buchung jetzt wirklich ausfuehren? [j/N]: " confirm
   if [[ "${confirm,,}" != "j" ]]; then
