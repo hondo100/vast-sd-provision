@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.16"
+VERSION="2026-05-24.16b"
 RESULTS=10
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
@@ -52,76 +52,6 @@ score_offer() {
     }'
 }
 
-parse_cli() {
-  python3 - "$RESULTS" <<'PY'
-import sys, re
-
-results = int(sys.argv[1])
-text = sys.stdin.read().splitlines()
-
-rows = []
-in_table = False
-
-pattern = re.compile(
-    r'^\s*(\d+)\s+'          # row number
-    r'(\d+)\s+'              # offer id
-    r'([0-9.]+)\s+'          # CUDA
-    r'(\d+x)\s+'             # N
-    r'([A-Za-z0-9_]+)\s+'    # Model
-    r'([0-9.]+)\s+'          # PCIE
-    r'([0-9.]+)\s+'          # cpu_ghz
-    r'([0-9.]+)\s+'          # vCPUs
-    r'([0-9.]+)\s+'          # RAM
-    r'([0-9.]+)\s+'          # VRAM
-    r'([0-9.]+)\s+'          # Disk
-    r'([0-9.]+)\s+'          # $/hr
-    r'([0-9.]+)\s+'          # DLP
-    r'([0-9.]+)\s+'          # DLP/$
-    r'([0-9.]+)\s*$'         # score
-)
-
-for line in text:
-    s = line.rstrip()
-
-    if not s.strip():
-        if in_table and rows:
-            break
-        continue
-
-    if s.lstrip().startswith('#  ID') and 'Model' in s and '$/hr' in s:
-        in_table = True
-        continue
-
-    if not in_table:
-        continue
-
-    m = pattern.match(s)
-    if not m:
-        continue
-
-    rowno, oid, cuda, n, model, pcie, cpu, vcpus, ram, vram, disk, price, dlp, dlp_per_dollar, score = m.groups()
-
-    model = model.replace('_', ' ')
-    price = float(price)
-    dlp = float(dlp)
-    vram = float(vram)
-    score = float(score)
-
-    rel = 1.00
-    tx = 0.0000
-    eff = price
-    status = "True"
-
-    rows.append((oid, model, price, tx, eff, dlp, rel, vram, status, score))
-
-    if len(rows) >= results:
-        break
-
-for r in rows:
-    print("\t".join(map(str, r)))
-PY
-}
-
 main() {
   local test=0 dry=0
   while [[ $# -gt 0 ]]; do
@@ -149,11 +79,83 @@ main() {
   echo "  Rot   = unter Mindestanforderungen"
   echo
 
-  raw="$(vast_cmd search offers "$QUERY" -o "$SORT")"
-  parsed="$(printf '%s\n' "$raw" | parse_cli)"
+  raw="$(vast_cmd search offers --raw "$QUERY" -o "$SORT")"
+
+  parsed="$(
+    printf '%s\n' "$raw" | python3 - "$RESULTS" <<'PY'
+import sys, json
+
+results = int(sys.argv[1])
+text = sys.stdin.read().strip()
+
+if not text:
+    sys.exit(0)
+
+data = json.loads(text)
+
+if isinstance(data, dict):
+    if "offers" in data and isinstance(data["offers"], list):
+        offers = data["offers"]
+    elif "rows" in data and isinstance(data["rows"], list):
+        offers = data["rows"]
+    else:
+        offers = [data]
+elif isinstance(data, list):
+    offers = data
+else:
+    offers = []
+
+def first_num(d, keys, default=0.0):
+    for k in keys:
+        if k in d and d[k] not in (None, ""):
+            try:
+                return float(d[k])
+            except Exception:
+                pass
+    return float(default)
+
+def first_str(d, keys, default=""):
+    for k in keys:
+        if k in d and d[k] not in (None, ""):
+            return str(d[k])
+    return default
+
+rows = []
+for o in offers:
+    if not isinstance(o, dict):
+        continue
+
+    oid = first_str(o, ["id", "offer_id"])
+    model = first_str(o, ["gpu_name", "gpu", "model"], "unknown").replace("_", " ")
+    price = first_num(o, ["dph_total", "price", "hourly_price", "dph"], 0.0)
+    dlp = first_num(o, ["dlperf", "dl_performance", "dlp"], 0.0)
+    rel = first_num(o, ["reliability", "reliability2", "rel", "r"], 1.0)
+    vram = first_num(o, ["gpu_ram", "gpu_total_ram", "vram"], 0.0)
+
+    if vram > 200:
+        vram = vram / 1024.0
+
+    status = first_str(o, ["verified", "status"], "True")
+    if status.lower() in ("true", "verified", "1"):
+        status = "True"
+
+    score = first_num(o, ["score"], 0.0)
+    tx = 0.0
+    eff = price
+
+    if oid:
+        rows.append((oid, model, price, tx, eff, dlp, rel, vram, status, score))
+
+rows = rows[:results]
+
+for r in rows:
+    print("\t".join(map(str, r)))
+PY
+  )"
 
   if [[ -z "$parsed" ]]; then
-    echo "Keine Angebote gefunden oder Parser passt nicht zum CLI-Output." >&2
+    echo "Keine Angebote gefunden oder --raw-Ausgabe unerwartet." >&2
+    echo "Diagnose: teste einmal manuell -> vastai search offers --raw '$QUERY' -o '$SORT' | head"
     exit 1
   fi
 
@@ -166,9 +168,9 @@ main() {
   for ((i=0; i<limit; i++)); do
     IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${rows[$i]}"
     score2="$(score_offer "$price" "$dl" "$rel" "$vram")"
-    [[ "$score" == "0" ]] && score="$score2"
+    [[ "$score" == "0" || "$score" == "0.0" ]] && score="$score2"
     line=$(printf '%-3s %-10s %-18s %7.4f %8.4f %8.4f %8.1f %7.1f %8.1f %5.2f %6s' \
-      "$((i+1))" "$oid" "$model" "$price" "0.0000" "$eff" "$dl" "$score" "$vram" "$rel" "$status")
+      "$((i+1))" "$oid" "$model" "$price" "$tx" "$eff" "$dl" "$score" "$vram" "$rel" "$status")
     case "$i" in
       0) green "$line" ;;
       1|2) yellow "$line" ;;
