@@ -1,202 +1,163 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.21"
+VERSION="2026-05-24.22"
 
-: <<'SCRIPT_NOTES'
-Erkenntnisse / Lessons Learned / Bitte bei Neuauflagen beibehalten und erweitern
+: <<'SCRIPT_OVERVIEW'
+========================================================================
+SCRIPT ARGUMENTS / OPTIONEN
+========================================================================
 
-======================================================================
-A) WAS NICHT ZUVERLÄSSIG FUNKTIONIERT HAT
-======================================================================
+Grundmodi
+- --test
+  Fuehrt keine echte Buchung aus. Die Auswahl- und Anzeige-Logik laeuft,
+  aber create instance wird nicht ausgefuehrt.
 
-1) Direkte REST-Aufrufe gegen die Vast-API per curl
-- Mehrere Varianten gegen:
-    https://console.vast.ai/api/v0/bundles
-  haben wiederholt HTTP 400 erzeugt.
-- Getestete Fehlwege:
-  a) JSON-artige Query direkt in der URL
-     /bundles?q={"verified":{"eq":true}}&limit=200...
-     -> Problem: curl/globbing/nested brace + API 400
-  b) JSON-Body gegen /bundles/
-     -> API-Format war nicht stabil bzw. nicht passend zur erwarteten Search-Syntax
-  c) URL-encoded q=... auf /bundles/
-     -> weiterhin 400
-- Fazit:
-  Nicht erneut auf rohe curl-/bundles-Varianten zurückfallen, solange CLI/--raw verfügbar ist.
+- --dry-run
+  Zeigt nur die Trefferliste und den Vorschlag an. Es erfolgt keine
+  Rueckfrage zur Auswahl und keine Buchung.
 
-2) Parsen der menschenlesbaren CLI-Tabelle
-- Aufrufe wie:
-    vastai search offers '...'
-  liefern eine gut lesbare Tabelle für Menschen, aber kein robustes Skriptformat.
-- Mehrere Parser-Ansätze (awk, Regex, Python auf Texttabelle) waren brüchig.
-- Grund:
-  Tabellenlayout kann je nach CLI-Version, Terminal, Spaltenbreite oder Formatierung variieren.
+- --diag
+  Fuehrt nur eine Rohdiagnose der Vast-CLI-Ausgabe aus:
+  RC, stdout/stderr-Bytezahlen, kurze Vorschau und JSON-Pruefung.
 
-3) awk-basierte Parser
-- Mindestens eine Version scheiterte direkt mit awk-Syntaxfehler.
-- Schlussfolgerung:
-  Für dieses Skript lieber Python-Parsing statt komplexer awk-Logik.
+Debug / Parseranalyse
+- --debug-json
+  Gibt die Keys der ersten Offer-Objekte und gekuerzte JSON-Rohobjekte
+  auf stderr aus. Dient dazu, lokale Unterschiede im --raw-JSON-Schema
+  sichtbar zu machen.
 
-======================================================================
-B) WAS BESSER FUNKTIONIERT / BEVORZUGTER PFAD
-======================================================================
+- --debug-json-limit N
+  Anzahl der Offer-Objekte, die im Debug-Modus auf stderr ausgegeben
+  werden sollen. Standard: 2
 
-1) Vast CLI statt rohe REST-API
-- Bevorzugt:
-    vastai search offers ...
-- Laut Vast-Dokumentation ist search offers die vorgesehene Suchschnittstelle.
-- Die CLI unterstützt dieselben Filter-/Sortierfelder wie die Website.
+Such- und Bewertungsparameter
+- --model-gb N
+  Modellgroesse in GB. Wird fuer die geschaetzten initialen
+  Downloadkosten (inet_down_cost) und die Storage-Kosten verwendet.
+  Standard: 20
 
-2) Maschinenlesbare Ausgabe bevorzugen
-- Bevorzugt:
-    vastai search offers --raw 'QUERY' -o 'SORT'
-- --raw ist laut CLI-Doku für maschinenlesbare JSON-Ausgabe gedacht.
-- Für Skripte ist JSON deutlich stabiler als Tabellen-Text.
+- --results N
+  Anzahl der anzuzeigenden Treffer. Standard: 10
 
-3) Standard-Query
-- Dokumentationsnah und sinnvoll:
-    external=false rentable=true verified=true
-- Sortierung:
-    -o 'dlperf_usd-'
+Booking-Parameter
+- --image IMAGE
+  Docker-Image fuer `vastai create instance`.
+  Standard:
+    pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime
 
-======================================================================
-C) BISHERIGE KONKRETE VERSIONEN / ERKENNTNISSE
-======================================================================
+- --disk-gb N
+  Zu buchender Disk-Speicher in GB fuer create instance.
+  Standard: 40
 
-v2026-05-24.9 bis v2026-05-24.12
-- Diverse curl/API-Varianten
-- Ergebnis:
-  wiederholt HTTP 400
+- --onstart-cmd CMD
+  Startup-Kommando fuer create instance.
 
-v2026-05-24.13
-- Umstieg auf CLI
-- Ergebnis:
-  CLI lief grundsätzlich, aber noch ohne echtes Output-Parsing
+- --no-ssh
+  Bucht die Instanz ohne `--ssh`.
 
-v2026-05-24.14
-- awk-Parser auf Tabellen-Output
-- Ergebnis:
-  awk-Syntaxfehler
+- --no-direct
+  Bucht die Instanz ohne `--direct`.
 
-v2026-05-24.15 / v2026-05-24.16
-- Python-Parser auf Tabellen-Output
-- Ergebnis:
-  "Keine Angebote gefunden oder Parser passt nicht zum CLI-Output."
-- Schluss:
-  Tabellen-Parsing zu fragil
+Interaktives Verhalten
+- Das Skript macht nur einen Vorschlag fuer die wirtschaftlichste
+  Instanz, bucht aber NICHT automatisch den Top-Treffer.
+- Der Benutzer waehlt die endgueltige Nummer selbst.
+- Enter uebernimmt den Vorschlag.
 
-v2026-05-24.16b
-- Umstieg auf:
-    vastai search offers --raw 'external=false rentable=true verified=true' -o 'dlperf_usd-'
-- Neues Log-Ergebnis:
-  Das Skript lief bis zum Suchschritt und beendete sich danach OHNE Ausgabe und OHNE Fehlermeldung.
-- Wichtige neue Erkenntnis:
-  Nicht nur das Parserformat ist unsicher; offenbar kann auch die --raw-Ausgabe in der lokalen CLI-Umgebung leer sein
-  oder anders zurückkommen als erwartet.
-- Das muss künftig als eigener Problemfall behandelt werden.
+Beispiele
+- Nur anzeigen:
+    bash ./find-cheapest-instance.sh --test --dry-run
 
-v2026-05-24.18
-- stdout/stderr der CLI-Suche werden zuerst getrennt in Dateien geschrieben und byteweise geprüft.
-- Ergebnis:
-  Leerfall, stderr-only-Fall und "kein JSON"-Fall lassen sich nun sauber unterscheiden.
-- Schluss:
-  Vor Parser- oder Ranking-Änderungen immer erst die Rohausgabe verifizieren.
+- Rohdiagnose:
+    bash ./find-cheapest-instance.sh --diag
 
-v2026-05-24.19
-- Wirtschaftlichkeitslogik erweitert um initiale Downloadkosten (20GB) und Storage-Kosten.
-- Ergebnis:
-  Bewertung ist näher an realen Betriebskosten als reine dph/dlperf-Sicht.
-- Schluss:
-  Für Modell-Hosting nicht nur Rechenpreis, sondern auch Daten-/Storage-Kosten berücksichtigen.
-
-v2026-05-24.20
-- Versionsnummer direkt an den Skriptanfang verschoben.
-- Here-Docs und Funktionsblöcke sauber geschlossen, um EOF-Syntaxfehler zu vermeiden.
-- Schluss:
-  Syntax bleibt leichter prüfbar, und die Version ist sofort sichtbar.
-
-v2026-05-24.21
-- Neuer Debug-Modus --debug-json ergänzt.
-- Zeigt die tatsächlichen Keys der ersten Offers und optional gekürzte Roh-Objekte, um lokale --raw-Abweichungen zu erkennen.
-- Parser für Preis/Leistungsfeld robuster gemacht, da dlperf_usd in der lokalen Ausgabe offenbar nicht wie erwartet gelesen wurde.
-- Schluss:
-  Vor weiteren Ranking-Anpassungen zuerst Feldnamen und Werte der lokalen CLI-Ausgabe verifizieren.
-
-======================================================================
-D) NEUER PROBLEM-FALL AB v16b
-======================================================================
-
-Beobachtung:
-- Log:
-    Skript-Version: 2026-05-24.16b
-    [INFO] Suche Angebote...
-    Modus: test
-    ...
-  danach direkte Rückkehr zum Prompt, ohne Tabelle, ohne Fehler.
-
-Mögliche Ursachen:
-1) vastai search offers --raw liefert leeres stdout
-2) vastai search offers --raw liefert etwas, das weder gültiges JSON noch erwartetes JSON ist
-3) die lokale CLI-Version verhält sich bei --raw anders als dokumentiert
-4) der Befehl schreibt evtl. relevante Infos nach stderr statt stdout
-5) ein nicht abgefangener Leerfall im Shell-/Python-Pfad
-
-Konsequenz:
-- Vor weiteren funktionalen Umbauten IMMER zuerst Rohdiagnose machen.
-- Nicht erneut an Ranking-/Farblogik arbeiten, solange die Rohdaten nicht verifiziert sind.
-
-======================================================================
-E) VERPFLICHTENDE DIAGNOSE VOR DER NÄCHSTEN NEUAUFLAGE
-======================================================================
-
-Diese Befehle zuerst manuell ausführen und die Ausgaben sichern:
-
-1) Prüfen, ob CLI grundsätzlich korrekt authentifiziert ist
-    vastai show user
-
-2) Prüfen, ob --raw überhaupt Daten liefert
-    vastai search offers --raw 'external=false rentable=true verified=true' -o 'dlperf_usd-' | head -c 1200
-
-3) Prüfen, ob evtl. stderr genutzt wird
-    vastai search offers --raw 'external=false rentable=true verified=true' -o 'dlperf_usd-' > /tmp/vast_raw.out 2> /tmp/vast_raw.err
-    wc -c /tmp/vast_raw.out /tmp/vast_raw.err
-    head -c 1200 /tmp/vast_raw.out
-    head -c 1200 /tmp/vast_raw.err
-
-4) CLI-Hilfe gegen lokale Version prüfen
-    vastai search offers --help
-
-5) Bei Parser-Auffälligkeiten Feldnamen der lokalen JSON-Ausgabe prüfen
-    bash ./find-cheapest-instance.sh --test --dry-run --debug-json 2> /tmp/vast_debug.err
+- JSON-Debug:
+    bash ./find-cheapest-instance.sh --test --dry-run --debug-json 2>/tmp/vast_debug.err
     sed -n '1,120p' /tmp/vast_debug.err
 
-Wenn /tmp/vast_raw.out leer ist:
-- Problem liegt NICHT am Parser, sondern an CLI/Version/Auth/Flag-Verhalten.
+- Echte Buchung mit eigenem Image:
+    bash ./find-cheapest-instance.sh \
+      --image vllm/vllm-openai:latest \
+      --disk-gb 80 \
+      --onstart-cmd 'nvidia-smi && python -V'
 
-Wenn /tmp/vast_raw.out Daten enthält, aber kein JSON:
-- Problem liegt an lokalem --raw-Verhalten oder einer abweichenden CLI-Version.
+========================================================================
+GEWONNENE ERKENNTNISSE / LESSONS LEARNED
+========================================================================
 
-Wenn /tmp/vast_raw.out JSON enthält:
-- Dann erst Parser gegen genau dieses JSON anpassen.
+1) Bevorzugter stabiler Pfad
+- Vast CLI statt rohe REST-Aufrufe bevorzugen.
+- Nicht zu curl + /api/v0/bundles zurueckkehren, solange CLI + --raw
+  verfuegbar sind.
+- Der stabile Arbeitsweg ist:
+    Vast CLI -> search offers --raw -> Rohausgabe pruefen ->
+    JSON mit python3 parsen -> Bash-Ausgabe erzeugen
 
-======================================================================
-F) BITTE BEI KÜNFTIGEN ÄNDERUNGEN BEACHTEN
-======================================================================
+2) Tabellen-Parsing vermeiden
+- `vastai search offers` ohne --raw liefert menschenlesbare Tabellen,
+  die fuer Skripte zu fragil sind.
+- Tabellen-Output nicht mit awk/Regex als primaeren Pfad parsen.
+- Fuer Skripte immer JSON bevorzugen.
 
-- Diesen Kommentarblock NICHT entfernen.
-- Nur erweitern, nicht ersetzen.
-- Jede neue Version soll hier kurz dokumentieren:
-  1) Was ausprobiert wurde
-  2) Was passiert ist
-  3) Welche Schlussfolgerung daraus folgt
-- Nicht erneut zu curl + /api/v0/bundles zurückkehren, solange CLI + --raw möglich ist.
-- Nicht wieder Texttabellen parsen, wenn --raw oder SDK verfügbar ist.
+3) Rohdiagnose vor Parser- oder Ranking-Aenderungen
+- Vor funktionalen Umbauten zuerst pruefen:
+  a) Auth ok? -> `vastai show user`
+  b) stdout leer?
+  c) schreibt CLI nach stderr?
+  d) ist stdout wirklich JSON?
+- Wenn stdout leer ist, liegt das Problem vor dem Parser.
+- Wenn stdout Daten enthaelt, aber kein JSON ist, liegt das Problem am
+  lokalen --raw-Verhalten oder an einer CLI-Abweichung.
 
-Kurzfazit:
-BEVORZUGTER STABILER PFAD:
-  Vast CLI -> search offers --raw -> Rohausgabe prüfen -> JSON mit python3 parsen -> Bash-Ausgabe erzeugen
-SCRIPT_NOTES
+4) Lokale JSON-Abweichungen beachten
+- Dokumentierte Felder koennen lokal unter leicht anderen Keys
+  auftauchen.
+- Das Preis/Leistungsfeld wurde lokal erfolgreich ueber
+  `dlperf_per_dphtotal` statt nur ueber `dlperf_usd` gefunden.
+- Der Status ist robuster ueber `verification` als nur ueber `verified`
+  lesbar.
+- Schlussfolgerung:
+  Parser mit Feld-Aliasen bauen, nicht mit nur einem festen Key.
+
+5) Wirtschaftlichkeitsbewertung nicht nur ueber Stundenpreis
+- Fuer Modell-Hosting nicht nur dph/dph_total betrachten.
+- Zusaetzlich beruecksichtigen:
+  - VRAM
+  - Reliability
+  - initiale Downloadkosten (`inet_down_cost`)
+  - monatliche Storage-Kosten (`storage_cost`)
+  - DLPerf und DLPerf pro Dollar
+
+6) Praktische Mindestanforderungen fuer ~20GB-Modelle
+- 20GB Modellgroesse bedeutet in der Praxis nicht, dass exakt 20GB VRAM
+  genuegen.
+- 24GB VRAM als Mindestschwelle ist ein sinnvoller Startwert.
+- Angebote unterhalb der Schwelle werden im Score als ungeeignet
+  markiert.
+
+7) Buchung bewusst interaktiv halten
+- Das Skript soll nur einen Vorschlag machen.
+- Die endgueltige Buchungsentscheidung bleibt beim Benutzer.
+- Keine automatische Buchung des Rang-1-Treffers.
+- Enter uebernimmt den Vorschlag, aber jede angezeigte Nummer kann
+  bewusst ausgewaehlt werden.
+
+8) SSH / Lifecycle
+- Vor Nutzung von `--ssh` sicherstellen, dass im Vast-Account ein
+  SSH-Key hinterlegt ist.
+- Nach erfolgreicher Buchung sind typischerweise relevant:
+    vastai ssh-url INSTANCE_ID
+    vastai show instance INSTANCE_ID
+    vastai stop instance INSTANCE_ID
+    vastai destroy instance INSTANCE_ID
+
+Kurzfazit
+- Nicht Tabellen parsen.
+- Nicht rohe Bundles-API priorisieren.
+- Erst Rohdaten pruefen, dann Parser anpassen.
+- Finale Buchung immer bewusst durch Benutzerwahl ausloesen.
+SCRIPT_OVERVIEW
 
 RESULTS=10
 MODEL_GB=20
@@ -205,21 +166,24 @@ MIN_REL=0.95
 MIN_DISK_GB=40
 DEBUG_JSON=0
 DEBUG_JSON_LIMIT=2
+
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 SORT='dlperf_usd-'
 
+IMAGE="${IMAGE:-pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime}"
+DISK_GB="${DISK_GB:-40}"
+ONSTART_CMD="${ONSTART_CMD:-echo hello && nvidia-smi}"
+ENABLE_SSH="${ENABLE_SSH:-1}"
+ENABLE_DIRECT="${ENABLE_DIRECT:-1}"
+
 usage() {
+  sed -n '/^SCRIPT ARGUMENTS \/ OPTIONEN$/,/^========================================================================$/p' <(
+    sed '1,/^SCRIPT_OVERVIEW$/d' "$0" 2>/dev/null || true
+  ) >/dev/null 2>&1 || true
+
   cat <<EOF
 Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N] [--model-gb N] [--results N]
-
-Optionen:
-  --test               keine Buchung ausführen
-  --dry-run            nur anzeigen, keine Auswahl/Buchung
-  --diag               nur Diagnose der Roh-CLI-Ausgabe
-  --debug-json         Debug-Ausgabe der ersten Offer-Keys/Objekte nach stderr
-  --debug-json-limit N Anzahl der im Debug gezeigten Offer-Objekte (default: $DEBUG_JSON_LIMIT)
-  --model-gb N         Modellgröße in GB (default: $MODEL_GB)
-  --results N          Anzahl anzuzeigender Treffer (default: $RESULTS)
+          [--image IMAGE] [--disk-gb N] [--onstart-cmd CMD] [--no-ssh] [--no-direct]
 EOF
 }
 
@@ -324,7 +288,6 @@ diag_raw() {
   if ! python3 - "$out_file" <<'PY'
 import json
 import sys
-
 p = sys.argv[1]
 txt = open(p, "r", encoding="utf-8", errors="replace").read().strip()
 json.loads(txt)
@@ -338,6 +301,93 @@ PY
 
   echo "[OK] --raw liefert JSON."
   rm -f "$out_file" "$err_file"
+}
+
+create_instance() {
+  local offer_id="$1"
+  local tmp_out tmp_err rc create_args instance_id
+
+  tmp_out="$(mktemp)"
+  tmp_err="$(mktemp)"
+
+  create_args=(create instance "$offer_id" --image "$IMAGE" --disk "$DISK_GB")
+  if [[ -n "$ONSTART_CMD" ]]; then
+    create_args+=(--onstart-cmd "$ONSTART_CMD")
+  fi
+  if [[ "$ENABLE_SSH" -eq 1 ]]; then
+    create_args+=(--ssh)
+  fi
+  if [[ "$ENABLE_DIRECT" -eq 1 ]]; then
+    create_args+=(--direct)
+  fi
+
+  echo "[INFO] Fuehre Booking aus..."
+  echo "[INFO] Kommando: $(printf '%q ' "$(command -v vastai || command -v vast)" "${create_args[@]}")"
+
+  set +e
+  vast_cmd "${create_args[@]}" >"$tmp_out" 2>"$tmp_err"
+  rc=$?
+  set -e
+
+  echo "[INFO] create instance stdout:"
+  sed -n '1,120p' "$tmp_out" || true
+
+  if [[ -s "$tmp_err" ]]; then
+    echo "[INFO] create instance stderr:"
+    sed -n '1,120p' "$tmp_err" || true
+  fi
+
+  if [[ $rc -ne 0 ]]; then
+    echo "[ERR] Booking fehlgeschlagen (RC=$rc)." >&2
+    rm -f "$tmp_out" "$tmp_err"
+    return 1
+  fi
+
+  instance_id="$(
+    python3 - "$tmp_out" <<'PY'
+import json
+import re
+import sys
+
+p = sys.argv[1]
+txt = open(p, "r", encoding="utf-8", errors="replace").read().strip()
+
+if not txt:
+    raise SystemExit(0)
+
+candidates = [txt]
+if txt.splitlines():
+    candidates.append(txt.splitlines()[-1])
+
+for candidate in candidates:
+    try:
+        data = json.loads(candidate)
+        if isinstance(data, dict):
+            for k in ("new_contract", "instance_id", "id"):
+                if k in data and data[k] not in (None, ""):
+                    print(data[k])
+                    raise SystemExit(0)
+    except Exception:
+        pass
+
+m = re.search(r'\b(\d{6,})\b', txt)
+if m:
+    print(m.group(1))
+PY
+  )"
+
+  if [[ -n "$instance_id" ]]; then
+    echo "[OK] Instanz erstellt. Instance-ID: $instance_id"
+    echo "[INFO] SSH-URL (falls verfuegbar):"
+    vast_cmd ssh-url "$instance_id" 2>/dev/null || true
+    echo "[INFO] Show:      vastai show instance $instance_id"
+    echo "[INFO] Stoppen:   vastai stop instance $instance_id"
+    echo "[INFO] Zerstoeren: vastai destroy instance $instance_id"
+  else
+    echo "[WARN] Booking erfolgreich, aber Instance-ID konnte nicht sicher aus der Ausgabe extrahiert werden."
+  fi
+
+  rm -f "$tmp_out" "$tmp_err"
 }
 
 main() {
@@ -371,6 +421,24 @@ main() {
         shift
         RESULTS="${1:?Fehlender Wert fuer --results}"
         ;;
+      --image)
+        shift
+        IMAGE="${1:?Fehlender Wert fuer --image}"
+        ;;
+      --disk-gb)
+        shift
+        DISK_GB="${1:?Fehlender Wert fuer --disk-gb}"
+        ;;
+      --onstart-cmd)
+        shift
+        ONSTART_CMD="${1:?Fehlender Wert fuer --onstart-cmd}"
+        ;;
+      --no-ssh)
+        ENABLE_SSH=0
+        ;;
+      --no-direct)
+        ENABLE_DIRECT=0
+        ;;
       -h|--help)
         usage
         exit 0
@@ -393,6 +461,13 @@ main() {
   echo "[INFO] Suchquery: $QUERY"
   echo "[INFO] Sortierung: $SORT"
   echo "[INFO] Modellgroesse fuer initiale Beladung: ${MODEL_GB} GB"
+  echo "[INFO] Booking-Image: $IMAGE"
+  echo "[INFO] Booking-Disk: ${DISK_GB} GB"
+  echo "[INFO] Booking-SSH: $ENABLE_SSH"
+  echo "[INFO] Booking-Direct: $ENABLE_DIRECT"
+  if [[ -n "$ONSTART_CMD" ]]; then
+    echo "[INFO] Booking-Onstart: $ONSTART_CMD"
+  fi
   if [[ $test -eq 1 ]]; then
     echo "Modus: test"
   else
@@ -523,7 +598,7 @@ for o in offers:
 
     price = first_num(o, ["dph_total", "dph", "price", "hourly_price"], 0.0)
     dlperf = first_num(o, ["dlperf", "dl_performance", "dlp"], 0.0)
-    dlperf_usd = first_num(o, ["dlperf_usd", "dlperf_per_dphtotal", "flops_usd", "score"], 0.0)
+    dlperf_usd = first_num(o, ["dlperf_usd", "dlperf_per_dphtotal", "flops_per_dphtotal", "score"], 0.0)
     rel = first_num(o, ["reliability", "reliability2", "rel", "r"], 1.0)
     vram = first_num(o, ["gpu_ram", "gpu_total_ram", "vram"], 0.0)
     inet_down = first_num(o, ["inet_down"], 0.0)
@@ -531,7 +606,7 @@ for o in offers:
     storage_cost = first_num(o, ["storage_cost"], 0.0)
     disk_space = first_num(o, ["disk_space"], 0.0)
     direct_ports = first_num(o, ["direct_port_count"], 0.0)
-    verified = first_str(o, ["verified"], "True")
+    verified = first_str(o, ["verification", "verified"], "True")
 
     if vram > 200:
         vram = vram / 1024.0
@@ -612,7 +687,6 @@ PY
 
   local best_idx=0
   local best_score="-999999"
-
   local i
   local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified score line
 
@@ -684,6 +758,13 @@ PY
 
   echo
   echo "Gewählt: $choice -> $oid / $model"
+  echo "[INFO] Booking-Parameter:"
+  echo "  - Offer-ID: $oid"
+  echo "  - Image: $IMAGE"
+  echo "  - Disk: $DISK_GB GB"
+  echo "  - SSH: $ENABLE_SSH"
+  echo "  - Direct: $ENABLE_DIRECT"
+  echo "  - Onstart: $ONSTART_CMD"
 
   if [[ $test -eq 1 ]]; then
     echo "[TEST] Kein Booking ausgeführt."
@@ -696,9 +777,7 @@ PY
     exit 0
   fi
 
-  echo "[INFO] Booking würde hier ausgeführt werden."
-  echo "[INFO] Beispielkommando (Image/Disk/Flags bei Bedarf anpassen):"
-  echo "vastai create instance $oid --image pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime --disk 40 --onstart-cmd \"echo hello && nvidia-smi\" --ssh --direct"
+  create_instance "$oid"
 }
 
 main "$@"
