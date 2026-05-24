@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.29"
+VERSION="2026-05-24.30"
 
 # ============================================================================
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -19,6 +19,10 @@ SESSION_HOURS=3
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
 MIN_DISK_GB=40
+
+# Download-/Bereitstellungsmodell
+BOOT_OVERHEAD_MIN=4.0
+DOWNLOAD_EFFICIENCY=0.75
 
 # Buchungsdefaults
 DO_BOOK=0
@@ -38,10 +42,8 @@ ZWECK
 ========================================================================
 - Dieses Skript sucht wirtschaftliche Vast-Angebote fuer ca. 20GB-Modelle.
 - Es kann nach Benutzerauswahl OPTIONAL direkt buchen.
-- Bevorzugter Buchungspfad:
-    Offer-ID + Template-Hash + Disk
-- Standard-Template-Hash in diesem Skript:
-    ad0935fab3e1f781fa442c1604ed07e2
+- Es bewertet nun zusaetzlich die geschaetzte Downloadzeit fuer 20GB
+  sowie die geschaetzte Gesamt-Bereitstellungszeit.
 
 ========================================================================
 WICHTIGE ERKENNTNISSE
@@ -51,49 +53,14 @@ WICHTIGE ERKENNTNISSE
 3) Rohdiagnose vor Parserumbauten.
 4) Grosse JSON-Daten nie per Environment-Variable an Python uebergeben.
 5) Fuer ~20GB-Modelle ist 24GB VRAM eine sinnvolle Mindestschwelle.
-6) Auswahlhilfe bleibt wichtig, aber jetzt kann das Skript auf Wunsch
-   auch die Buchung ausfuehren.
+6) Downloadgeschwindigkeit (`inet_down`) ist fuer die tatsaechliche
+   Time-to-Ready relevant und soll in Bewertung und Tabelle einfliessen.
 7) Template-Buchung bedeutet:
    - Offer-ID bleibt Pflicht
    - template_hash liefert die Basiskonfiguration
    - disk sollte explizit gesetzt werden
 8) Nach jedem groesseren Edit:
       bash -n ./find-cheapest-instance.sh
-
-========================================================================
-MODI
-========================================================================
---dry-run
-- Nur anzeigen, niemals buchen.
-
---diag
-- Nur Vast-Rohdiagnose.
-
---book
-- Nach Auswahl und expliziter Bestaetigung tatsaechlich buchen.
-
---template-hash HASH
-- Template-Hash fuer die Buchung.
-- Default:
-    ad0935fab3e1f781fa442c1604ed07e2
-
-========================================================================
-BEISPIELE
-========================================================================
-Nur anzeigen:
-  bash ./find-cheapest-instance.sh --dry-run
-
-Diagnose:
-  bash ./find-cheapest-instance.sh --diag
-
-Mit echter Buchung per Template:
-  bash ./find-cheapest-instance.sh --book
-
-Mit explizitem anderem Template:
-  bash ./find-cheapest-instance.sh --book --template-hash DEIN_HASH
-
-Mit groesserer Disk:
-  bash ./find-cheapest-instance.sh --book --disk 64
 SCRIPT_OVERVIEW
 
 usage() {
@@ -151,19 +118,23 @@ score_offer() {
   local rel="$4"
   local vram="$5"
   local numg="$6"
+  local ready_min="$7"
+  local dl_mbps="$8"
 
-  python3 - "$eff_hour" "$dl" "$dlu" "$rel" "$vram" "$numg" "$MIN_VRAM_GB" "$MIN_REL" <<'PY'
+  python3 - "$eff_hour" "$dl" "$dlu" "$rel" "$vram" "$numg" "$ready_min" "$dl_mbps" "$MIN_VRAM_GB" "$MIN_REL" <<'PY'
 import math
 import sys
 
-eff  = float(sys.argv[1])
-dl   = float(sys.argv[2])
-dlu  = float(sys.argv[3])
-rel  = float(sys.argv[4])
-vram = float(sys.argv[5])
-numg = float(sys.argv[6])
-minv = float(sys.argv[7])
-minr = float(sys.argv[8])
+eff       = float(sys.argv[1])
+dl        = float(sys.argv[2])
+dlu       = float(sys.argv[3])
+rel       = float(sys.argv[4])
+vram      = float(sys.argv[5])
+numg      = float(sys.argv[6])
+ready_min = float(sys.argv[7])
+dl_mbps   = float(sys.argv[8])
+minv      = float(sys.argv[9])
+minr      = float(sys.argv[10])
 
 if vram < minv or rel < minr:
     print(-1.0)
@@ -187,6 +158,10 @@ else:
 rel_score = rel * rel
 dl_score = math.log(max(dl, 1.0))
 dlu_score = math.log(max(dlu, 1.0))
+net_score = math.log(max(dl_mbps, 1.0))
+
+# Schnelle Bereitstellung belohnen, lange Ready-Zeit abstrafen.
+ready_penalty = 1.0 / max(ready_min, 1.0)
 
 if numg <= 1:
     gpu_penalty = 1.00
@@ -198,11 +173,13 @@ else:
     gpu_penalty = 0.55
 
 score = (
-    cost_score * 0.58 +
-    vram_score * 0.17 +
-    rel_score  * 0.15 +
-    dlu_score  * 0.06 +
-    dl_score   * 0.04
+    cost_score    * 0.47 +
+    vram_score    * 0.16 +
+    rel_score     * 0.14 +
+    ready_penalty * 0.12 +
+    dlu_score     * 0.05 +
+    dl_score      * 0.03 +
+    net_score     * 0.03
 ) * gpu_penalty
 
 print(f"{score:.6f}")
@@ -268,58 +245,20 @@ main() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --test)
-        test=1
-        ;;
-      --dry-run)
-        dry=1
-        ;;
-      --diag)
-        diag=1
-        ;;
-      --debug-json)
-        DEBUG_JSON=1
-        ;;
-      --debug-json-limit)
-        shift
-        DEBUG_JSON_LIMIT="${1:?Fehlender Wert fuer --debug-json-limit}"
-        ;;
-      --model-gb)
-        shift
-        MODEL_GB="${1:?Fehlender Wert fuer --model-gb}"
-        ;;
-      --session-hours)
-        shift
-        SESSION_HOURS="${1:?Fehlender Wert fuer --session-hours}"
-        ;;
-      --results)
-        shift
-        RESULTS="${1:?Fehlender Wert fuer --results}"
-        ;;
-      --search-limit)
-        shift
-        SEARCH_LIMIT="${1:?Fehlender Wert fuer --search-limit}"
-        ;;
-      --book)
-        DO_BOOK=1
-        ;;
-      --template-hash)
-        shift
-        TEMPLATE_HASH="${1:?Fehlender Wert fuer --template-hash}"
-        ;;
-      --disk)
-        shift
-        DISK_GB="${1:?Fehlender Wert fuer --disk}"
-        ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      *)
-        echo "Unknown argument: $1" >&2
-        usage
-        exit 2
-        ;;
+      --test) test=1 ;;
+      --dry-run) dry=1 ;;
+      --diag) diag=1 ;;
+      --debug-json) DEBUG_JSON=1 ;;
+      --debug-json-limit) shift; DEBUG_JSON_LIMIT="${1:?Fehlender Wert fuer --debug-json-limit}" ;;
+      --model-gb) shift; MODEL_GB="${1:?Fehlender Wert fuer --model-gb}" ;;
+      --session-hours) shift; SESSION_HOURS="${1:?Fehlender Wert fuer --session-hours}" ;;
+      --results) shift; RESULTS="${1:?Fehlender Wert fuer --results}" ;;
+      --search-limit) shift; SEARCH_LIMIT="${1:?Fehlender Wert fuer --search-limit}" ;;
+      --book) DO_BOOK=1 ;;
+      --template-hash) shift; TEMPLATE_HASH="${1:?Fehlender Wert fuer --template-hash}" ;;
+      --disk) shift; DISK_GB="${1:?Fehlender Wert fuer --disk}" ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
     esac
     shift
   done
@@ -335,6 +274,8 @@ main() {
   echo "[INFO] Tabellensortierung lokal: Score absteigend"
   echo "[INFO] Modellgroesse fuer initiale Beladung: ${MODEL_GB} GB"
   echo "[INFO] Angenommene Sitzungsdauer: ${SESSION_HOURS} h"
+  echo "[INFO] Boot-Overhead-Schaetzung: ${BOOT_OVERHEAD_MIN} min"
+  echo "[INFO] Download-Effizienzfaktor: ${DOWNLOAD_EFFICIENCY}"
   echo "[INFO] Anzahl Rohangebote von Vast: ${SEARCH_LIMIT}"
   echo "[INFO] Anzahl final angezeigter Angebote: ${RESULTS}"
   echo "[INFO] Mindest-VRAM: ${MIN_VRAM_GB} GB"
@@ -405,7 +346,7 @@ main() {
   local parsed
   parsed="$(
     DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" \
-    python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" <<'PY'
+    python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" <<'PY'
 import json
 import os
 import sys
@@ -416,6 +357,9 @@ model_gb = float(sys.argv[3])
 session_hours = float(sys.argv[4])
 min_vram_gb = float(sys.argv[5])
 min_rel = float(sys.argv[6])
+boot_overhead_min = float(sys.argv[7])
+download_efficiency = float(sys.argv[8])
+
 debug_json = int(os.environ.get("DEBUG_JSON", "0"))
 debug_limit = int(os.environ.get("DEBUG_JSON_LIMIT", "2"))
 
@@ -468,8 +412,6 @@ if debug_json:
                 ),
                 file=sys.stderr
             )
-        else:
-            print(f"#DEBUG offer[{idx}] type={type(offer).__name__} value={repr(offer)[:1000]}", file=sys.stderr)
 
 rows = []
 for o in offers[:search_limit]:
@@ -504,6 +446,12 @@ for o in offers[:search_limit]:
     monthly_model_storage = model_gb * storage_cost
     eff_hour = price + (initial_load_cost / max(session_hours, 0.1))
 
+    # inet_down ist laut Vast in Mb/s
+    effective_mbps = max(inet_down * download_efficiency, 0.001)
+    model_megabits = model_gb * 1024.0 * 8.0
+    est_model_dl_min = model_megabits / effective_mbps / 60.0
+    est_ready_min = est_model_dl_min + boot_overhead_min
+
     rows.append({
         "oid": oid,
         "model": model,
@@ -521,6 +469,8 @@ for o in offers[:search_limit]:
         "disk_space": disk_space,
         "direct_ports": direct_ports,
         "verified": verified,
+        "est_model_dl_min": est_model_dl_min,
+        "est_ready_min": est_ready_min,
     })
 
 for r in rows:
@@ -540,6 +490,8 @@ for r in rows:
         f'{r["inet_down_cost"]:.6f}',
         f'{r["disk_space"]:.6f}',
         f'{r["direct_ports"]:.6f}',
+        f'{r["est_model_dl_min"]:.6f}',
+        f'{r["est_ready_min"]:.6f}',
         str(r["verified"]),
     ]))
 PY
@@ -564,11 +516,11 @@ PY
 
   local -a scored_rows=()
   local i
-  local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified score line
+  local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified score line
 
   for ((i=0; i<${#rows[@]}; i++)); do
-    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$i]}"
-    score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg")"
+    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified <<< "${rows[$i]}"
+    score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
     scored_rows+=("${score}"$'\t'"${rows[$i]}")
   done
 
@@ -584,16 +536,16 @@ PY
 
   local best_idx=0
 
-  printf '%-3s %-10s %-18s %4s %7s %8s %8s %8s %9s %8s %6s %7s %6s\n' \
-    "Nr" "Offer_ID" "Model" "GPUx" "\$/hr" "20GB Tx" "Eff\$/h" "DLPerf" "DLP/\$" "VRAMGB" "Rel" "Ports" "Score"
-  printf '%s\n' "------------------------------------------------------------------------------------------------------------------"
+  printf '%-3s %-10s %-16s %4s %7s %8s %8s %7s %7s %7s %8s %6s %6s\n' \
+    "Nr" "Offer_ID" "Model" "GPUx" "\$/hr" "20GBTx" "Eff\$/h" "DLMb/s" "20GBm" "Readym" "VRAMGB" "Rel" "Score"
+  printf '%s\n' "---------------------------------------------------------------------------------------------------------------"
 
   for ((i=0; i<limit; i++)); do
-    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$i]}"
-    score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg")"
+    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified <<< "${rows[$i]}"
+    score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
 
-    line=$(printf '%-3s %-10s %-18s %4.0f %7.4f %8.4f %8.4f %8.1f %9.3f %8.1f %6.2f %7.0f %6.2f' \
-      "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$dl" "$dlu" "$vram" "$rel" "$ports" "$score")
+    line=$(printf '%-3s %-10s %-16s %4.0f %7.4f %8.4f %8.4f %7.0f %7.1f %7.1f %8.1f %6.2f %6.2f' \
+      "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min" "$est_ready_min" "$vram" "$rel" "$score")
 
     case "$i" in
       0) green "$line" ;;
@@ -604,13 +556,16 @@ PY
     printf '\n'
   done
 
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$best_idx]}"
+  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified <<< "${rows[$best_idx]}"
 
   echo
   echo "Vorschlag: Nummer $((best_idx+1)) ($oid / $model)"
   echo "  - Stundenpreis: ${price} $/h"
   echo "  - Initiale 20GB-Beladung: ${tx} $"
   echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: ${eff} $/h"
+  echo "  - Downloadrate: ${inet_down} Mb/s"
+  echo "  - Geschaetzte 20GB-Downloadzeit: ${est_dl_min} min"
+  echo "  - Geschaetzte Bereitstellung: ${est_ready_min} min"
   echo "  - Monatliche Storage-Kosten fuer 20GB: ${month} $/Monat"
   echo "  - DLPerf: ${dl}, DLPerf/\$: ${dlu}, VRAM: ${vram} GB, Reliability: ${rel}, Ports: ${ports}"
   echo
@@ -632,10 +587,12 @@ PY
     fi
   done
 
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$((choice-1))]}"
+  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min verified <<< "${rows[$((choice-1))]}"
 
   echo
   echo "Gewählt: $choice -> $oid / $model"
+  echo "  - Erwartete 20GB-Downloadzeit: ${est_dl_min} min"
+  echo "  - Erwartete Gesamt-Bereitstellung: ${est_ready_min} min"
 
   if [[ $DO_BOOK -ne 1 ]]; then
     echo "[HINWEIS] Keine automatische Buchung aktiviert."
@@ -654,6 +611,8 @@ PY
   echo "  Modell/GPU:    $model"
   echo "  Template Hash: $TEMPLATE_HASH"
   echo "  Disk:          ${DISK_GB} GB"
+  echo "  ETA 20GB DL:   ${est_dl_min} min"
+  echo "  ETA Ready:     ${est_ready_min} min"
   echo
   read -r -p "Buchung jetzt wirklich ausfuehren? [j/N]: " confirm
   if [[ "${confirm,,}" != "j" ]]; then
