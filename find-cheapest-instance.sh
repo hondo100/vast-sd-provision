@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-TEMPLATE_HASH="b1fa2e3cff64f518ea3c8ab74fc03607"
+TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
 RESULTS=10
 DRY_RUN=0
 MODE="prod"
