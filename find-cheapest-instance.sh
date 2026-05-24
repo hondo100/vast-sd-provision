@@ -1,218 +1,111 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.27"
+VERSION="2026-05-24.29"
 
-: <<'SCRIPT_OVERVIEW'
-========================================================================
-SCRIPT ARGUMENTS / OPTIONEN
-========================================================================
+# ============================================================================
+# GLOBALE KONFIGURATION / DEFAULTS
+# ============================================================================
 
-Zweck dieses Skripts
-- Dieses Skript dient zur Auswahl wirtschaftlicher Vast-Angebote.
-- Die eigentliche Buchung erfolgt anschliessend manuell im Vast-Webinterface.
-- Dort kann gezielt das Template "SD WebUI Forge" ausgewaehlt werden.
-- Dieses Skript bucht NICHT automatisch.
-
-Grundmodi
-- --test
-  Rein informativer Modus. Aktuell identisch zum Normalmodus, da keine
-  automatische Buchung mehr erfolgt.
-
-- --dry-run
-  Zeigt nur die Trefferliste und den Vorschlag an.
-
-- --diag
-  Fuehrt nur eine Rohdiagnose der Vast-CLI-Ausgabe aus:
-  RC, stdout/stderr-Bytezahlen, kurze Vorschau und JSON-Pruefung.
-
-Debug / Parseranalyse
-- --debug-json
-  Gibt die Keys der ersten Offer-Objekte und gekuerzte JSON-Rohobjekte
-  auf stderr aus. Dient dazu, lokale Unterschiede im --raw-JSON-Schema
-  sichtbar zu machen.
-
-- --debug-json-limit N
-  Anzahl der Offer-Objekte, die im Debug-Modus auf stderr ausgegeben
-  werden sollen. Standard: 2
-
-Such- und Bewertungsparameter
-- --model-gb N
-  Modellgroesse in GB. Wird fuer die geschaetzten initialen
-  Downloadkosten (inet_down_cost) und die Storage-Kosten verwendet.
-  Standard: 20
-
-- --session-hours N
-  Angenommene typische Nutzungsdauer pro Sitzung in Stunden.
-  Die initialen Downloadkosten des Modells werden auf diese Dauer
-  umgelegt, um realistischere Effektivkosten pro Stunde zu berechnen.
-  Standard: 3
-
-- --results N
-  Anzahl der final anzuzeigenden geeigneten Treffer. Standard: 10
-
-- --search-limit N
-  Anzahl der Rohangebote, die von Vast geladen werden, bevor lokal
-  gefiltert und sortiert wird. Standard: 60
-
-Interaktives Verhalten
-- Das Skript macht nur einen Vorschlag fuer die wirtschaftlichste
-  Instanz.
-- Die endgueltige Entscheidung und Buchung erfolgen manuell im Vast-UI.
-- Dort kann z. B. das Template "SD WebUI Forge" gewaehlt werden.
-
-Beispiele
-- Nur anzeigen:
-    bash ./find-cheapest-instance.sh --dry-run
-
-- Rohdiagnose:
-    bash ./find-cheapest-instance.sh --diag
-
-- JSON-Debug:
-    bash ./find-cheapest-instance.sh --dry-run --debug-json 2>/tmp/vast_debug.err
-    sed -n '1,160p' /tmp/vast_debug.err
-
-- Eigene Sitzungsdauer:
-    bash ./find-cheapest-instance.sh --session-hours 2 --results 12
-
-- Mehr Rohangebote laden:
-    bash ./find-cheapest-instance.sh --search-limit 100 --results 15
-
-========================================================================
-GEWONNENE ERKENNTNISSE / LESSONS LEARNED
-========================================================================
-
-1) Bevorzugter stabiler Pfad
-- Vast CLI statt rohe REST-Aufrufe bevorzugen.
-- Nicht zu curl + /api/v0/bundles zurueckkehren, solange CLI + --raw
-  verfuegbar sind.
-- Der stabile Arbeitsweg ist:
-    Vast CLI -> search offers --raw -> Rohausgabe pruefen ->
-    JSON mit python3 parsen -> Bash-Ausgabe erzeugen
-
-2) Tabellen-Parsing vermeiden
-- `vastai search offers` ohne --raw liefert menschenlesbare Tabellen,
-  die fuer Skripte zu fragil sind.
-- Tabellen-Output nicht mit awk/Regex als primaeren Pfad parsen.
-- Fuer Skripte immer JSON bevorzugen.
-
-3) Rohdiagnose vor Parser- oder Ranking-Aenderungen
-- Vor funktionalen Umbauten zuerst pruefen:
-  a) Auth ok? -> `vastai show user`
-  b) stdout leer?
-  c) schreibt CLI nach stderr?
-  d) ist stdout wirklich JSON?
-- Wenn stdout leer ist, liegt das Problem vor dem Parser.
-- Wenn stdout Daten enthaelt, aber kein JSON ist, liegt das Problem am
-  lokalen --raw-Verhalten oder an einer CLI-Abweichung.
-
-4) Lokale JSON-Abweichungen beachten
-- Dokumentierte Felder koennen lokal unter leicht anderen Keys
-  auftauchen.
-- Das Preis/Leistungsfeld wurde lokal erfolgreich ueber
-  `dlperf_per_dphtotal` statt nur ueber `dlperf_usd` gefunden.
-- Der Status ist robuster ueber `verification` als nur ueber `verified`
-  lesbar.
-- Schlussfolgerung:
-  Parser mit Feld-Aliasen bauen, nicht mit nur einem festen Key.
-
-5) Wirtschaftlichkeitsbewertung nicht nur ueber Stundenpreis
-- Fuer Modell-Hosting nicht nur dph/dph_total betrachten.
-- Zusaetzlich beruecksichtigen:
-  - VRAM
-  - Reliability
-  - initiale Downloadkosten (`inet_down_cost`)
-  - monatliche Storage-Kosten (`storage_cost`)
-  - DLPerf und DLPerf pro Dollar
-
-6) Praktische Mindestanforderungen fuer ~20GB-Modelle
-- 20GB Modellgroesse bedeutet in der Praxis nicht, dass exakt 20GB VRAM
-  genuegen.
-- 24GB VRAM als Mindestschwelle ist ein sinnvoller Startwert.
-- Angebote unterhalb der Schwelle werden als ungeeignet ausgeschlossen.
-
-7) Auswahlhilfe statt Auto-Buchung
-- Das Skript soll einen Vorschlag machen, aber nicht automatisch buchen.
-- Die endgueltige Buchung erfolgt bewusst im Vast-Webinterface.
-- So kann dort gezielt ein passendes Template wie "SD WebUI Forge"
-  ausgewaehlt werden.
-
-8) Vast-Template hat eigene Laufzeitumgebung
-- Wenn die Instanz spaeter im Vast-UI mit einem Template erstellt wird,
-  bestimmt das Template die konkrete Laufzeitumgebung.
-- Ein frueher im Skript gesetztes Docker-Image waere dafuer nicht
-  massgeblich.
-- Deshalb fokussiert dieses Skript nur auf Angebotsauswahl.
-
-9) Bewertungssystem auf interaktives Arbeiten ausgerichtet
-- Dieses Skript optimiert NICHT auf maximalen Batch-Durchsatz.
-- Ziel ist laengeres manuelles Arbeiten an einzelnen Bildern oder Videos.
-- Deshalb werden niedrige Stundenpreise staerker gewichtet als rohe
-  Spitzenleistung.
-- Ausreichender VRAM und gute Reliability sind wichtiger als extreme
-  Mehrleistung.
-- Multi-GPU-Angebote werden leicht abgestraft, wenn sie fuer den Use
-  Case voraussichtlich nur Mehrkosten statt echten Nutzen bringen.
-
-10) Effektivkosten an reale Sitzungsdauer koppeln
-- Fuer diesen Use Case sind kurze interaktive Sessions von ca. 3 Stunden
-  realistischer als 24h-Dauerbetrieb.
-- Die initialen Downloadkosten des Modells werden deshalb nicht auf 24h,
-  sondern auf die angenommene Sitzungsdauer umgelegt.
-- Dadurch werden Kurzsitzungen realistischer bewertet.
-
-11) Mehr Rohangebote laden, lokal ungeeignete eliminieren
-- Es ist sinnvoller, mehr Rohangebote von Vast zu laden und danach lokal
-  ungeeignete Treffer auszuschliessen, als nur wenige Treffer zu laden
-  und ungeeignete Kandidaten in der Endliste stehen zu lassen.
-- Dadurch steigt die Chance, dass unter den final angezeigten Treffern
-  wirklich nur brauchbare und wirtschaftliche Optionen erscheinen.
-
-12) Grosse JSON-Daten nicht ueber Environment-Variablen weiterreichen
-- Umfangreiche --raw-Antworten koennen bei Uebergabe ueber
-  RAW_JSON=... an python3 zu "Argument list too long" fuehren.
-- Grosse Rohdaten deshalb immer ueber Datei oder stdin an Python
-  uebergeben, nicht ueber Umgebungsvariablen.
-
-13) Nach jedem groesseren Edit sofort Syntax pruefen
-- Lange Bash-Skripte koennen beim Copy/Paste unbemerkt beschaedigt werden.
-- Deshalb nach jedem groesseren Einfuegen mindestens:
-    bash -n ./find-cheapest-instance.sh
-- EOF-/Quote-Fehler sind meist keine Laufzeit-, sondern reine
-  Syntax-/Paste-Probleme.
-
-Kurzfazit
-- Nicht Tabellen parsen.
-- Nicht rohe Bundles-API priorisieren.
-- Erst Rohdaten pruefen, dann Parser anpassen.
-- Mehr Rohangebote laden, lokal ungeeignete eliminieren.
-- Grosse JSON-Daten ueber Datei/stdin statt Environment-Variable.
-- Nach Edits immer bash -n laufen lassen.
-- Auswahl im Skript, Buchung bewusst im Vast-UI mit passendem Template.
-SCRIPT_OVERVIEW
-
+# Such- und Auswahlparameter
 RESULTS=10
 SEARCH_LIMIT=60
+QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
+SORT='dlperf_usd-'
+
+# Modell- und Wirtschaftlichkeitsannahmen
 MODEL_GB=20
 SESSION_HOURS=3
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
 MIN_DISK_GB=40
+
+# Buchungsdefaults
+DO_BOOK=0
+DISK_GB=40
+TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
+
+# Debug / Diagnose
 DEBUG_JSON=0
 DEBUG_JSON_LIMIT=2
 
-QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
-SORT='dlperf_usd-'
+# Ausgabe / Anzeige
+COLOR_ENABLED_AUTO=1
+
+: <<'SCRIPT_OVERVIEW'
+========================================================================
+ZWECK
+========================================================================
+- Dieses Skript sucht wirtschaftliche Vast-Angebote fuer ca. 20GB-Modelle.
+- Es kann nach Benutzerauswahl OPTIONAL direkt buchen.
+- Bevorzugter Buchungspfad:
+    Offer-ID + Template-Hash + Disk
+- Standard-Template-Hash in diesem Skript:
+    ad0935fab3e1f781fa442c1604ed07e2
+
+========================================================================
+WICHTIGE ERKENNTNISSE
+========================================================================
+1) Vast CLI + --raw ist der bevorzugte Suchpfad.
+2) Tabellen-Parsing vermeiden, JSON bevorzugen.
+3) Rohdiagnose vor Parserumbauten.
+4) Grosse JSON-Daten nie per Environment-Variable an Python uebergeben.
+5) Fuer ~20GB-Modelle ist 24GB VRAM eine sinnvolle Mindestschwelle.
+6) Auswahlhilfe bleibt wichtig, aber jetzt kann das Skript auf Wunsch
+   auch die Buchung ausfuehren.
+7) Template-Buchung bedeutet:
+   - Offer-ID bleibt Pflicht
+   - template_hash liefert die Basiskonfiguration
+   - disk sollte explizit gesetzt werden
+8) Nach jedem groesseren Edit:
+      bash -n ./find-cheapest-instance.sh
+
+========================================================================
+MODI
+========================================================================
+--dry-run
+- Nur anzeigen, niemals buchen.
+
+--diag
+- Nur Vast-Rohdiagnose.
+
+--book
+- Nach Auswahl und expliziter Bestaetigung tatsaechlich buchen.
+
+--template-hash HASH
+- Template-Hash fuer die Buchung.
+- Default:
+    ad0935fab3e1f781fa442c1604ed07e2
+
+========================================================================
+BEISPIELE
+========================================================================
+Nur anzeigen:
+  bash ./find-cheapest-instance.sh --dry-run
+
+Diagnose:
+  bash ./find-cheapest-instance.sh --diag
+
+Mit echter Buchung per Template:
+  bash ./find-cheapest-instance.sh --book
+
+Mit explizitem anderem Template:
+  bash ./find-cheapest-instance.sh --book --template-hash DEIN_HASH
+
+Mit groesserer Disk:
+  bash ./find-cheapest-instance.sh --book --disk 64
+SCRIPT_OVERVIEW
 
 usage() {
   cat <<EOF
 Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N]
           [--model-gb N] [--session-hours N] [--results N] [--search-limit N]
+          [--book] [--template-hash HASH] [--disk N]
 EOF
 }
 
 color_supported() {
-  [[ -t 1 ]]
+  [[ "${COLOR_ENABLED_AUTO}" -eq 1 && -t 1 ]]
 }
 
 c() {
@@ -235,6 +128,14 @@ have_vast() {
   command -v vastai >/dev/null 2>&1 || command -v vast >/dev/null 2>&1
 }
 
+vast_bin() {
+  if command -v vastai >/dev/null 2>&1; then
+    echo "vastai"
+  else
+    echo "vast"
+  fi
+}
+
 vast_cmd() {
   if command -v vastai >/dev/null 2>&1; then
     vastai "$@"
@@ -243,51 +144,6 @@ vast_cmd() {
   fi
 }
 
-# ----------------------------------------------------------------------
-# Bewertungssystem / Scoring-Modell
-#
-# Zielprofil dieses Skripts:
-# - keine Batch- oder Massendurchsatz-Optimierung
-# - stattdessen laengeres manuelles/interaktives Arbeiten an einzelnen
-#   Bildern oder Videos
-# - deshalb ist ein niedriger Stundenpreis wichtiger als maximale rohe
-#   DL-Leistung
-#
-# Bewertungsprinzipien:
-# 1) Harte Ausschlusskriterien:
-#    - VRAM < MIN_VRAM_GB      -> ungeeignet
-#    - Reliability < MIN_REL   -> ungeeignet
-#
-# 2) Hohe Gewichtung auf niedrige effektive Stundenkosten:
-#    - eff_hour = GPU-Kosten plus auf die angenommene typische
-#      Sitzungsdauer umgelegte initiale Downloadkosten des Modells
-#    - Standardannahme: kurze interaktive Sitzungen von ca. 3 Stunden
-#    - Je niedriger eff_hour, desto besser
-#
-# 3) VRAM nur bis zu einer sinnvollen Reserve belohnen:
-#    - 24 GB ist Mindestschwelle
-#    - 24-32 GB ist gut
-#    - 32-48 GB ist komfortabel
-#    - deutlich mehr VRAM bringt fuer diesen Use Case nur noch kleinen
-#      Zusatznutzen
-#
-# 4) Reliability wichtig:
-#    - Fuer laengeres manuelles Arbeiten ist Stabilitaet wichtiger als
-#      eine kleine zusaetzliche Benchmark-Leistung
-#
-# 5) Multi-GPU-Malus:
-#    - 2+ GPUs sind fuer diesen interaktiven Use Case oft teurer als noetig
-#    - Deshalb werden Mehr-GPU-Angebote leicht abgestraft
-#
-# 6) DLPerf / DLPerf pro Dollar nur schwach bis moderat gewichten:
-#    - Leistung zaehlt weiterhin
-#    - aber deutlich schwaecher als Preis, VRAM-Eignung und Stability
-#
-# Interpretation:
-# - Score ist ein lokaler Vergleichswert nur innerhalb dieser Ergebnisliste
-# - Hoeher = besser fuer dieses Nutzungsszenario
-# - -1 = unter Mindestanforderungen / ungeeignet
-# ----------------------------------------------------------------------
 score_offer() {
   local eff_hour="$1"
   local dl="$2"
@@ -381,8 +237,8 @@ diag_raw() {
 
   if [[ "$out_bytes" -eq 0 ]]; then
     echo "[ERR] stdout ist leer. Problem liegt vor dem Parser."
-    echo "Pruefe Auth mit: vastai show user"
-    echo "Pruefe Hilfe mit: vastai search offers --help"
+    echo "Pruefe Auth mit: $(vast_bin) show user"
+    echo "Pruefe Hilfe mit: $(vast_bin) search offers --help"
     rm -f "$out_file" "$err_file"
     return 1
   fi
@@ -444,6 +300,17 @@ main() {
         shift
         SEARCH_LIMIT="${1:?Fehlender Wert fuer --search-limit}"
         ;;
+      --book)
+        DO_BOOK=1
+        ;;
+      --template-hash)
+        shift
+        TEMPLATE_HASH="${1:?Fehlender Wert fuer --template-hash}"
+        ;;
+      --disk)
+        shift
+        DISK_GB="${1:?Fehlender Wert fuer --disk}"
+        ;;
       -h|--help)
         usage
         exit 0
@@ -470,7 +337,16 @@ main() {
   echo "[INFO] Angenommene Sitzungsdauer: ${SESSION_HOURS} h"
   echo "[INFO] Anzahl Rohangebote von Vast: ${SEARCH_LIMIT}"
   echo "[INFO] Anzahl final angezeigter Angebote: ${RESULTS}"
-  echo "[INFO] Ziel-Workflow: Auswahl im Skript, Buchung danach im Vast-UI mit Template (z. B. SD WebUI Forge)"
+  echo "[INFO] Mindest-VRAM: ${MIN_VRAM_GB} GB"
+  echo "[INFO] Mindest-Reliability: ${MIN_REL}"
+  echo "[INFO] Mindest-Disk im Query: ${MIN_DISK_GB} GB"
+  echo "[INFO] Template-Hash fuer Buchung: ${TEMPLATE_HASH}"
+  echo "[INFO] Disk fuer Buchung: ${DISK_GB} GB"
+  if [[ $DO_BOOK -eq 1 ]]; then
+    echo "[INFO] Buchungsmodus: AKTIV"
+  else
+    echo "[INFO] Buchungsmodus: AUS (nur Auswahl)"
+  fi
   if [[ $test -eq 1 ]]; then
     echo "Modus: test"
   else
@@ -489,7 +365,7 @@ main() {
   echo "[INFO] Auth-Check..."
   if ! vast_cmd show user >/dev/null 2>&1; then
     echo "[ERR] vast CLI nicht authentifiziert oder API-Key ungueltig." >&2
-    echo "Bitte pruefen mit: vastai show user" >&2
+    echo "Bitte pruefen mit: $(vast_bin) show user" >&2
     exit 1
   fi
 
@@ -526,6 +402,7 @@ main() {
   fi
   rm -f "$err_file"
 
+  local parsed
   parsed="$(
     DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" \
     python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" <<'PY'
@@ -676,16 +553,16 @@ PY
     exit 1
   fi
 
+  local -a rows
   mapfile -t rows < <(printf '%s\n' "$parsed")
 
   echo "Legende:"
   echo "  Grün  = bester GenAI-Score"
   echo "  Gelb  = gute Balance"
   echo "  Blau  = günstig"
-  echo "  Rot   = wird im Normalbetrieb nicht mehr angezeigt, da ungeeignete Angebote vorher ausgeschlossen werden"
   echo
 
-  local scored_rows=()
+  local -a scored_rows=()
   local i
   local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified score line
 
@@ -737,12 +614,116 @@ PY
   echo "  - Monatliche Storage-Kosten fuer 20GB: ${month} $/Monat"
   echo "  - DLPerf: ${dl}, DLPerf/\$: ${dlu}, VRAM: ${vram} GB, Reliability: ${rel}, Ports: ${ports}"
   echo
-  echo "[HINWEIS] Dieses Skript bucht nicht automatisch."
-  echo "[HINWEIS] Nutze die Offer-ID $oid im Vast-Webinterface und waehle dort dein Template,"
-  echo "          z. B. 'SD WebUI Forge'."
 
   if [[ $dry -eq 1 ]]; then
+    echo "[HINWEIS] Dry-run aktiv, keine Auswahl/Buchung."
     exit 0
+  fi
+
+  local choice=""
+  while [[ -z "$choice" ]]; do
+    read -r -p "Welche Nummer verwenden? [1-$limit] (Enter = $((best_idx+1))): " raw_choice
+    if [[ -z "$raw_choice" ]]; then
+      choice="$((best_idx+1))"
+    elif [[ "$raw_choice" =~ ^[0-9]+$ ]] && (( raw_choice >= 1 && raw_choice <= limit )); then
+      choice="$raw_choice"
+    else
+      echo "Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben."
+    fi
+  done
+
+  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports verified <<< "${rows[$((choice-1))]}"
+
+  echo
+  echo "Gewählt: $choice -> $oid / $model"
+
+  if [[ $DO_BOOK -ne 1 ]]; then
+    echo "[HINWEIS] Keine automatische Buchung aktiviert."
+    echo "[HINWEIS] Fuer echte Buchung Script mit --book starten."
+    exit 0
+  fi
+
+  if [[ -z "$TEMPLATE_HASH" ]]; then
+    echo "[ERR] Kein Template-Hash gesetzt." >&2
+    exit 2
+  fi
+
+  echo
+  echo "[INFO] Buchungsvorbereitung"
+  echo "  Offer-ID:      $oid"
+  echo "  Modell/GPU:    $model"
+  echo "  Template Hash: $TEMPLATE_HASH"
+  echo "  Disk:          ${DISK_GB} GB"
+  echo
+  read -r -p "Buchung jetzt wirklich ausfuehren? [j/N]: " confirm
+  if [[ "${confirm,,}" != "j" ]]; then
+    echo "Abgebrochen."
+    exit 0
+  fi
+
+  local book_out book_rc
+  book_out="$(mktemp)"
+
+  echo "[INFO] Fuehre Buchung aus..."
+  set +e
+  vast_cmd create instance "$oid" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" >"$book_out" 2>&1
+  book_rc=$?
+  set -e
+
+  cat "$book_out"
+
+  if [[ $book_rc -ne 0 ]]; then
+    echo "[ERR] Buchung fehlgeschlagen (RC=$book_rc)." >&2
+    rm -f "$book_out"
+    exit 1
+  fi
+
+  local instance_id=""
+  instance_id="$(python3 - "$book_out" <<'PY'
+import json
+import re
+import sys
+
+p = sys.argv[1]
+txt = open(p, "r", encoding="utf-8", errors="replace").read().strip()
+
+try:
+    data = json.loads(txt)
+    if isinstance(data, dict):
+        for k in ("new_contract", "instance_id", "id"):
+            if k in data and data[k] not in (None, ""):
+                print(str(data[k]))
+                raise SystemExit(0)
+    elif isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            for k in ("new_contract", "instance_id", "id"):
+                if k in first and first[k] not in (None, ""):
+                    print(str(first[k]))
+                    raise SystemExit(0)
+except Exception:
+    pass
+
+m = re.search(r'\b([0-9]{4,})\b', txt)
+if m:
+    print(m.group(1))
+PY
+  )"
+
+  rm -f "$book_out"
+
+  echo
+  echo "[OK] Buchung erfolgreich."
+  if [[ -n "$instance_id" ]]; then
+    echo "[INFO] Instance-ID: $instance_id"
+    echo "[INFO] Details abrufen mit:"
+    echo "       $(vast_bin) show instance $instance_id"
+    echo "[INFO] SSH-URL abrufen mit:"
+    echo "       $(vast_bin) ssh-url $instance_id"
+  else
+    echo "[WARN] Instance-ID konnte nicht eindeutig aus der CLI-Ausgabe extrahiert werden."
+    echo "[INFO] Bitte Instanzen anzeigen mit:"
+    echo "       $(vast_bin) show instances"
   fi
 }
 
