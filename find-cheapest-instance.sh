@@ -1,7 +1,172 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.16b"
+: <<'SCRIPT_NOTES'
+Erkenntnisse / Lessons Learned / Bitte bei Neuauflagen beibehalten und erweitern
+
+======================================================================
+A) WAS NICHT ZUVERLÄSSIG FUNKTIONIERT HAT
+======================================================================
+
+1) Direkte REST-Aufrufe gegen die Vast-API per curl
+- Mehrere Varianten gegen:
+    https://console.vast.ai/api/v0/bundles
+  haben wiederholt HTTP 400 erzeugt.
+- Getestete Fehlwege:
+  a) JSON-artige Query direkt in der URL
+     /bundles?q={"verified":{"eq":true}}&limit=200...
+     -> Problem: curl/globbing/nested brace + API 400
+  b) JSON-Body gegen /bundles/
+     -> API-Format war nicht stabil bzw. nicht passend zur erwarteten Search-Syntax
+  c) URL-encoded q=... auf /bundles/
+     -> weiterhin 400
+- Fazit:
+  Nicht erneut auf rohe curl-/bundles-Varianten zurückfallen, solange CLI/--raw verfügbar ist.
+
+2) Parsen der menschenlesbaren CLI-Tabelle
+- Aufrufe wie:
+    vastai search offers '...'
+  liefern eine gut lesbare Tabelle für Menschen, aber kein robustes Skriptformat.
+- Mehrere Parser-Ansätze (awk, Regex, Python auf Texttabelle) waren brüchig.
+- Grund:
+  Tabellenlayout kann je nach CLI-Version, Terminal, Spaltenbreite oder Formatierung variieren.
+
+3) awk-basierte Parser
+- Mindestens eine Version scheiterte direkt mit awk-Syntaxfehler.
+- Schlussfolgerung:
+  Für dieses Skript lieber Python-Parsing statt komplexer awk-Logik.
+
+======================================================================
+B) WAS BESSER FUNKTIONIERT / BEVORZUGTER PFAD
+======================================================================
+
+1) Vast CLI statt rohe REST-API
+- Bevorzugt:
+    vastai search offers ...
+- Laut Vast-Dokumentation ist search offers die vorgesehene Suchschnittstelle.
+- Die CLI unterstützt dieselben Filter-/Sortierfelder wie die Website.
+
+2) Maschinenlesbare Ausgabe bevorzugen
+- Bevorzugt:
+    vastai search offers --raw 'QUERY' -o 'SORT'
+- --raw ist laut CLI-Doku für maschinenlesbare JSON-Ausgabe gedacht.
+- Für Skripte ist JSON deutlich stabiler als Tabellen-Text.
+
+3) Standard-Query
+- Dokumentationsnah und sinnvoll:
+    external=false rentable=true verified=true
+- Sortierung:
+    -o 'dlperf_usd-'
+
+======================================================================
+C) BISHERIGE KONKRETE VERSIONEN / ERKENNTNISSE
+======================================================================
+
+v2026-05-24.9 bis v2026-05-24.12
+- Diverse curl/API-Varianten
+- Ergebnis:
+  wiederholt HTTP 400
+
+v2026-05-24.13
+- Umstieg auf CLI
+- Ergebnis:
+  CLI lief grundsätzlich, aber noch ohne echtes Output-Parsing
+
+v2026-05-24.14
+- awk-Parser auf Tabellen-Output
+- Ergebnis:
+  awk-Syntaxfehler
+
+v2026-05-24.15 / v2026-05-24.16
+- Python-Parser auf Tabellen-Output
+- Ergebnis:
+  "Keine Angebote gefunden oder Parser passt nicht zum CLI-Output."
+- Schluss:
+  Tabellen-Parsing zu fragil
+
+v2026-05-24.16b
+- Umstieg auf:
+    vastai search offers --raw 'external=false rentable=true verified=true' -o 'dlperf_usd-'
+- Neues Log-Ergebnis:
+  Das Skript lief bis zum Suchschritt und beendete sich danach OHNE Ausgabe und OHNE Fehlermeldung.
+- Wichtige neue Erkenntnis:
+  Nicht nur das Parserformat ist unsicher; offenbar kann auch die --raw-Ausgabe in der lokalen CLI-Umgebung leer sein
+  oder anders zurückkommen als erwartet.
+- Das muss künftig als eigener Problemfall behandelt werden.
+
+======================================================================
+D) NEUER PROBLEM-FALL AB v16b
+======================================================================
+
+Beobachtung:
+- Log:
+    Skript-Version: 2026-05-24.16b
+    [INFO] Suche Angebote...
+    Modus: test
+    ...
+  danach direkte Rückkehr zum Prompt, ohne Tabelle, ohne Fehler.
+
+Mögliche Ursachen:
+1) vastai search offers --raw liefert leeres stdout
+2) vastai search offers --raw liefert etwas, das weder gültiges JSON noch erwartetes JSON ist
+3) die lokale CLI-Version verhält sich bei --raw anders als dokumentiert
+4) der Befehl schreibt evtl. relevante Infos nach stderr statt stdout
+5) ein nicht abgefangener Leerfall im Shell-/Python-Pfad
+
+Konsequenz:
+- Vor weiteren funktionalen Umbauten IMMER zuerst Rohdiagnose machen.
+- Nicht erneut an Ranking-/Farblogik arbeiten, solange die Rohdaten nicht verifiziert sind.
+
+======================================================================
+E) VERPFLICHTENDE DIAGNOSE VOR DER NÄCHSTEN NEUAUFLAGE
+======================================================================
+
+Diese Befehle zuerst manuell ausführen und die Ausgaben sichern:
+
+1) Prüfen, ob CLI grundsätzlich korrekt authentifiziert ist
+    vastai show user
+
+2) Prüfen, ob --raw überhaupt Daten liefert
+    vastai search offers --raw 'external=false rentable=true verified=true' -o 'dlperf_usd-' | head -c 1200
+
+3) Prüfen, ob evtl. stderr genutzt wird
+    vastai search offers --raw 'external=false rentable=true verified=true' -o 'dlperf_usd-' > /tmp/vast_raw.out 2> /tmp/vast_raw.err
+    wc -c /tmp/vast_raw.out /tmp/vast_raw.err
+    head -c 1200 /tmp/vast_raw.out
+    head -c 1200 /tmp/vast_raw.err
+
+4) CLI-Hilfe gegen lokale Version prüfen
+    vastai search offers --help
+
+Wenn /tmp/vast_raw.out leer ist:
+- Problem liegt NICHT am Parser, sondern an CLI/Version/Auth/Flag-Verhalten.
+
+Wenn /tmp/vast_raw.out Daten enthält, aber kein JSON:
+- Problem liegt an lokalem --raw-Verhalten oder einer abweichenden CLI-Version.
+
+Wenn /tmp/vast_raw.out JSON enthält:
+- Dann erst Parser gegen genau dieses JSON anpassen.
+
+======================================================================
+F) BITTE BEI KÜNFTIGEN ÄNDERUNGEN BEACHTEN
+======================================================================
+
+- Diesen Kommentarblock NICHT entfernen.
+- Nur erweitern, nicht ersetzen.
+- Jede neue Version soll hier kurz dokumentieren:
+  1) Was ausprobiert wurde
+  2) Was passiert ist
+  3) Welche Schlussfolgerung daraus folgt
+- Nicht erneut zu curl + /api/v0/bundles zurückkehren, solange CLI + --raw möglich ist.
+- Nicht wieder Texttabellen parsen, wenn --raw oder SDK verfügbar ist.
+
+Kurzfazit:
+BEVORZUGTER STABILER PFAD:
+  Vast CLI -> search offers --raw -> Rohausgabe prüfen -> JSON mit python3 parsen -> Bash-Ausgabe erzeugen
+
+SCRIPT_NOTES
+
+VERSION="2026-05-24.17"
 RESULTS=10
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
@@ -79,25 +244,40 @@ main() {
   echo "  Rot   = unter Mindestanforderungen"
   echo
 
-  raw="$(vast_cmd search offers --raw "$QUERY" -o "$SORT")"
+  raw="$(vast_cmd search offers --raw "$QUERY" -o "$SORT" 2>/dev/null || true)"
+
+  if [[ -z "$raw" ]]; then
+    echo "[ERR] Keine --raw-Ausgabe erhalten." >&2
+    echo "Diagnose 1: vastai show user" >&2
+    echo "Diagnose 2: vastai search offers --raw '$QUERY' -o '$SORT' | head -c 1200" >&2
+    echo "Diagnose 3: vastai search offers --raw '$QUERY' -o '$SORT' > /tmp/vast_raw.out 2> /tmp/vast_raw.err" >&2
+    exit 1
+  fi
 
   parsed="$(
-    printf '%s\n' "$raw" | python3 - "$RESULTS" <<'PY'
-import sys, json
+    RAW_JSON="$raw" python3 - "$RESULTS" <<'PY'
+import json
+import os
+import sys
 
 results = int(sys.argv[1])
-text = sys.stdin.read().strip()
+text = os.environ.get("RAW_JSON", "").strip()
 
 if not text:
     sys.exit(0)
 
-data = json.loads(text)
+try:
+    data = json.loads(text)
+except Exception:
+    sys.exit(0)
 
 if isinstance(data, dict):
-    if "offers" in data and isinstance(data["offers"], list):
+    if isinstance(data.get("offers"), list):
         offers = data["offers"]
-    elif "rows" in data and isinstance(data["rows"], list):
+    elif isinstance(data.get("rows"), list):
         offers = data["rows"]
+    elif isinstance(data.get("results"), list):
+        offers = data["results"]
     else:
         offers = [data]
 elif isinstance(data, list):
@@ -127,10 +307,12 @@ for o in offers:
 
     oid = first_str(o, ["id", "offer_id"])
     model = first_str(o, ["gpu_name", "gpu", "model"], "unknown").replace("_", " ")
+
     price = first_num(o, ["dph_total", "price", "hourly_price", "dph"], 0.0)
     dlp = first_num(o, ["dlperf", "dl_performance", "dlp"], 0.0)
     rel = first_num(o, ["reliability", "reliability2", "rel", "r"], 1.0)
     vram = first_num(o, ["gpu_ram", "gpu_total_ram", "vram"], 0.0)
+    score = first_num(o, ["score"], 0.0)
 
     if vram > 200:
         vram = vram / 1024.0
@@ -139,7 +321,6 @@ for o in offers:
     if status.lower() in ("true", "verified", "1"):
         status = "True"
 
-    score = first_num(o, ["score"], 0.0)
     tx = 0.0
     eff = price
 
@@ -154,8 +335,9 @@ PY
   )"
 
   if [[ -z "$parsed" ]]; then
-    echo "Keine Angebote gefunden oder --raw-Ausgabe unerwartet." >&2
-    echo "Diagnose: teste einmal manuell -> vastai search offers --raw '$QUERY' -o '$SORT' | head"
+    echo "[ERR] --raw wurde empfangen, aber das JSON-Format passte nicht zum Parser." >&2
+    echo "Bitte diese Diagnose ausführen:" >&2
+    echo "vastai search offers --raw '$QUERY' -o '$SORT' | head -c 1200" >&2
     exit 1
   fi
 
