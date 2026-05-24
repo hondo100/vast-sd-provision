@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.9"
+VERSION="2026-05-24.10"
 RESULTS=10
 TX_GB=20.0
 MIN_VRAM_GB=24.0
@@ -41,10 +41,14 @@ get_auth() {
 
 get_json() {
   local auth="$1"
+  local q
+  q='{"verified":{"eq":true},"rentable":{"eq":true}}'
   curl -fsSL --max-time 30 \
     -H "Authorization: Bearer ${auth}" \
-    -H "Content-Type: application/json" \
-    -d '{"verified":{"eq":true},"rentable":{"eq":true},"limit":200,"order":"-gpu_total_ram"}' \
+    --get \
+    --data-urlencode "q=${q}" \
+    --data-urlencode "limit=200" \
+    --data-urlencode 'order=[["dlperf_per_dphtotal","desc"]]' \
     "$VAST_URL/"
 }
 
