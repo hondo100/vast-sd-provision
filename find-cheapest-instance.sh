@@ -5,23 +5,26 @@ TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
 RESULTS=10
 DRY_RUN=0
 MODE="prod"
-SORT="dlperf_usd-"
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --test) MODE="test" ;;
     --prod) MODE="prod" ;;
+    *)
+      echo "Ungueltiger Parameter: $arg"
+      exit 1
+      ;;
   esac
 done
 
 echo "Pruefe Vast.ai Auth..."
-if ! vastai show api-keys >/dev/null 2>&1; then
-  echo "VAST_KEY_FAIL"
-  exit 1
-fi
 if ! vastai show user >/dev/null 2>&1; then
   echo "VAST_USER_FAIL"
+  exit 1
+fi
+if ! vastai show api-keys >/dev/null 2>&1; then
+  echo "VAST_KEY_FAIL"
   exit 1
 fi
 
@@ -30,10 +33,10 @@ echo
 
 case "$MODE" in
   prod)
-    QUERY='gpu_ram>24 reliability>0.98 num_gpus=1 rented=False verified=True rentable=true direct_port_count>=1 score>0'
+    QUERY='gpu_ram>24 reliability>0.98 num_gpus=1 rented=False verified=True rentable=true direct_port_count>=1'
     ;;
   test)
-    QUERY='gpu_ram>16 reliability>0.95 num_gpus=1 rented=False verified=True rentable=true direct_port_count>=1 score>0'
+    QUERY='gpu_ram>16 reliability>0.95 num_gpus=1 rented=False verified=True rentable=true direct_port_count>=1'
     ;;
   *)
     echo "Ungueltiger Modus: $MODE"
@@ -41,7 +44,7 @@ case "$MODE" in
     ;;
 esac
 
-RAW="$(vastai search offers "$QUERY" --raw -o "$SORT")"
+RAW="$(vastai search offers "$QUERY" --raw -o 'dlperf_usd-')"
 
 python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$TEMPLATE_HASH" <<'PY' <<<"$RAW"
 import sys, json, subprocess
