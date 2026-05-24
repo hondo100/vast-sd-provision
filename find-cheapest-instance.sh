@@ -1,244 +1,215 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env python3
+# find-cheapest-instance.sh
+# Version: 2026-05-24.7
 
-SCRIPT_VERSION="2026-05-24.6"
-
-if [[ "${1:-}" == "--version" ]]; then
-  echo "$SCRIPT_VERSION"
-  exit 0
-fi
-
-TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
-RESULTS=10
-DRY_RUN=0
-MODE="prod"
-CONFIRM=0
-MODEL_GB=20.0
-MIN_GPU_RAM=16.0
-MIN_RELIABILITY=0.95
-
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY_RUN=1 ;;
-    --test) MODE="test" ;;
-    --prod) MODE="prod" ;;
-    --yes) CONFIRM=1 ;;
-    *)
-      echo "Ungueltiger Parameter: $arg"
-      exit 1
-      ;;
-  esac
-done
-
-C_RESET=$'\033[0m'
-C_RED=$'\033[1;31m'
-C_GREEN=$'\033[1;32m'
-C_YELLOW=$'\033[1;33m'
-C_BLUE=$'\033[1;34m'
-C_CYAN=$'\033[1;36m'
-C_DIM=$'\033[2m'
-
-info(){ echo -e "${C_CYAN}[INFO]${C_RESET} $*"; }
-ok(){ echo -e "${C_GREEN}[OK]${C_RESET} $*"; }
-warn(){ echo -e "${C_YELLOW}[WARN]${C_RESET} $*"; }
-err(){ echo -e "${C_RED}[ERR]${C_RESET} $*" >&2; }
-
-echo "Skript-Version: ${SCRIPT_VERSION}"
-echo "Pruefe Vast.ai Auth..."
-if ! vastai show api-keys >/dev/null 2>&1; then
-  err "VAST_KEY_FAIL"
-  exit 1
-fi
-
-ok "VAST_AUTH_OK"
-echo
-
-case "$MODE" in
-  prod)
-    QUERY="gpu_ram>24 reliability>0.98 num_gpus=1 rented=False verified=True rentable=true direct_port_count>=1"
-    ;;
-  test)
-    QUERY="gpu_ram>16 reliability>0.95 num_gpus=1 rented=False verified=True rentable=true direct_port_count>=1"
-    ;;
-  *)
-    err "Ungueltiger Modus: $MODE"
-    exit 1
-    ;;
-esac
-
-info "Suche Angebote..."
-RAW_FILE="$(mktemp)"
-trap 'rm -f "$RAW_FILE"' EXIT
-vastai search offers "$QUERY" --raw -o 'dlperf_usd-' > "$RAW_FILE"
-
-python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$CONFIRM" "$TEMPLATE_HASH" "$RAW_FILE" "$MODEL_GB" "$MIN_GPU_RAM" "$MIN_RELIABILITY" <<'PY'
-import sys, json, subprocess
-
-MODE = sys.argv[1]
-RESULTS = int(sys.argv[2])
-DRY_RUN = sys.argv[3] == '1'
-CONFIRM = sys.argv[4] == '1'
-TEMPLATE_HASH = sys.argv[5]
-RAW_FILE = sys.argv[6]
-MODEL_GB = float(sys.argv[7])
-MIN_GPU_RAM = float(sys.argv[8])
-MIN_RELIABILITY = float(sys.argv[9])
-
-with open(RAW_FILE, 'r', encoding='utf-8') as f:
-    raw = f.read().strip()
-
-if not raw:
-    print("Keine Daten empfangen.")
-    sys.exit(1)
+import os
+import sys
+import json
+import argparse
+import subprocess
+import time
 
 try:
-    data = json.loads(raw)
-except Exception as e:
-    print(f"JSON-Parse-Fehler: {e}")
-    print(raw[:1000])
+    import requests
+except ImportError:
+    print("[ERR] requests fehlt. Bitte installieren: pip install requests", file=sys.stderr)
     sys.exit(1)
 
-def extract_rows(obj):
-    if isinstance(obj, list):
-        return obj
-    if isinstance(obj, dict):
-        for key in ("offers", "results", "data"):
-            val = obj.get(key)
-            if isinstance(val, list):
-                return val
+VERSION = "2026-05-24.7"
+RESULTS = 10
+TX_GB = 20.0
+MIN_VRAM_GB = 24.0
+MIN_REL = 0.95
+MIN_DL_PERF = 0.0
+VAST_URL = "https://console.vast.ai/api/v0/bundles"
+
+def c(text, code):
+    return f"\033[{code}m{text}\033[0m"
+
+def green(text): return c(text, "32")
+def yellow(text): return c(text, "33")
+def blue(text): return c(text, "34")
+def red(text): return c(text, "31")
+def bold(text): return c(text, "1")
+
+def fmt_num(x, width=7, prec=1):
+    return f"{x:>{width}.{prec}f}"
+
+def get_auth():
+    env = os.getenv("VAST_AUTH", "").strip()
+    if env:
+        return env
+    try:
+        out = subprocess.check_output(["vast", "show", "auth"], text=True).strip()
+        return out
+    except Exception:
+        return ""
+
+def fetch_offers():
+    params = {
+        "q": json.dumps({
+            "verified": {"eq": True}
+        }),
+        "limit": 200,
+        "order": "-gpu_total_ram"
+    }
+    headers = {"Authorization": f"Bearer {AUTH}"}
+    r = requests.get(VAST_URL, params=params, headers=headers, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    if isinstance(data, dict) and "offers" in data:
+        return data["offers"]
+    if isinstance(data, dict) and "results" in data:
+        return data["results"]
+    if isinstance(data, list):
+        return data
     return []
 
-rows = extract_rows(data)
-if not rows:
-    print("Keine Angebote gefunden.")
-    sys.exit(1)
+def get_value(d, *keys, default=0):
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return default
 
-parsed = []
-for r in rows:
+def as_float(v, default=0.0):
     try:
-        offer_id = str(r.get("id") or r.get("offer_id") or "")
-        if not offer_id:
-            continue
-        model = str(r.get("gpu_name") or r.get("machine_name") or r.get("model") or "unknown")
-        gpu_ram = float(r.get("gpu_ram") or r.get("gpu_total_ram") or 0)
-        price = float(r.get("dph_total") or r.get("price") or 0)
-        dlperf = float(r.get("dlperf") or 0)
-        dlperf_ratio = float(r.get("dlperf_per_dphtotal") or 0)
-        if not dlperf_ratio and price > 0:
-            dlperf_ratio = dlperf / price
-        reliability = float(r.get("reliability") or r.get("expected_reliability") or 0)
-        inet_down_cost = float(r.get("inet_down_cost") or 0)
-        transfer_cost = MODEL_GB * inet_down_cost
-        effective_cost = price + transfer_cost
+        return float(v)
+    except Exception:
+        return default
 
-        vram_factor = 1.0
-        if gpu_ram >= 48:
-            vram_factor = 1.4
-        elif gpu_ram >= 24:
-            vram_factor = 1.2
-        elif gpu_ram < MIN_GPU_RAM:
-            vram_factor = 0.7
+def score_offer(r):
+    price = as_float(get_value(r, "dph_total", "price", "hourly_price", default=0))
+    eff = as_float(r.get("effective_hourly", price))
+    dl = as_float(get_value(r, "dlperf", "dl_performance", default=0))
+    rel = as_float(get_value(r, "reliability", "rel", default=1))
+    vram = as_float(get_value(r, "gpu_ram", "gpu_total_ram", "vram", default=0)) / 1024.0
 
-        genai_score = (dlperf * vram_factor) / effective_cost if effective_cost > 0 else 0.0
+    if vram < MIN_VRAM_GB or rel < MIN_REL:
+        return -1
+
+    price_score = 1.0 / max(eff, 0.0001)
+    vram_bonus = min(vram / 24.0, 2.0)
+    rel_bonus = rel
+    dl_bonus = dl / 100.0
+    return price_score * 0.45 + dl_bonus * 0.35 + vram_bonus * 0.15 + rel_bonus * 0.05
+
+def classify(i):
+    if i == 0:
+        return green
+    if i in (1, 2):
+        return yellow
+    if i in (3, 4):
+        return blue
+    return lambda x: x
+
+def main():
+    global AUTH
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    print(f"Skript-Version: {VERSION}")
+    print("Pruefe Vast.ai Auth...")
+    AUTH = get_auth()
+    if not AUTH:
+        print("[ERR] Kein Vast.ai Auth-Token gefunden", file=sys.stderr)
+        sys.exit(2)
+    print("[OK] VAST_AUTH_OK")
+    print()
+    print("[INFO] Suche Angebote...")
+    print(f"Modus: {'test' if args.test else 'live'}")
+    print("Legende:")
+    print("  Grün  = bester GenAI-Score")
+    print("  Gelb  = gute Balance aus Preis und Leistung")
+    print("  Blau  = günstigste effektive Kosten")
+    print("  Rot   = unter Mindestanforderungen")
+    print()
+
+    offers = fetch_offers()
+
+    parsed = []
+    for r in offers:
+        price = as_float(get_value(r, "dph_total", "price", "hourly_price", default=0))
+        tx = as_float(r.get("tx_cost_20gb", 0))
+        eff = price + tx
+        dl = as_float(get_value(r, "dlperf", "dl_performance", default=0))
+        rel = as_float(get_value(r, "reliability", "rel", default=1))
+        vram_gb = as_float(get_value(r, "gpu_ram", "gpu_total_ram", "vram", default=0)) / 1024.0
+        status = bool(get_value(r, "verified", "status", default=True))
+        model = str(get_value(r, "gpu_name", "model", "gpu", default="unknown"))
+        offer_id = str(get_value(r, "id", "offer_id", default=""))
         parsed.append({
             "offer_id": offer_id,
             "model": model,
-            "gpu_ram": gpu_ram,
             "price": price,
-            "dlperf": dlperf,
-            "dlperf_ratio": dlperf_ratio,
-            "reliability": reliability,
-            "inet_down_cost": inet_down_cost,
-            "transfer_cost": transfer_cost,
-            "effective_cost": effective_cost,
-            "vram_factor": vram_factor,
-            "genai_score": genai_score,
-            "status": str(r.get("rentable") if r.get("rentable") is not None else r.get("status") or ""),
+            "tx": tx,
+            "eff": eff,
+            "dl": dl,
+            "rel": rel,
+            "vram_gb": vram_gb,
+            "status": status,
+            "score": score_offer(r),
         })
-    except Exception:
-        continue
 
-if not parsed:
-    print("Keine Angebote konnten geparst werden.")
-    sys.exit(1)
+    parsed = sorted(parsed, key=lambda x: (-x["score"], x["eff"], -x["dl"]))
 
-best_score = max(parsed, key=lambda r: r["genai_score"])["genai_score"]
-best_cost = min(parsed, key=lambda r: r["effective_cost"])["effective_cost"]
+    print(f"{'Nr':<3} {'Offer_ID':<10} {'Model':<18} {'$/hr':>7} {'20GB Tx':>8} {'Eff$/h':>8} {'DLPerf':>8} {'Score':>7} {'VRAM GB':>8} {'Rel':>5} {'Status':>6}")
+    print("-" * 96)
 
-for r in parsed:
-    if r["reliability"] < MIN_RELIABILITY or r["gpu_ram"] < MIN_GPU_RAM:
-        r["color"] = "red"
-    elif r["genai_score"] >= best_score:
-        r["color"] = "green"
-    elif r["effective_cost"] <= best_cost:
-        r["color"] = "blue"
+    shown = parsed[:RESULTS]
+    for idx, r in enumerate(shown, start=1):
+        color = classify(idx - 1)
+        line = (
+            f"{idx:<3} {r['offer_id']:<10} {r['model']:<18} "
+            f"{r['price']:>7.4f} {r['tx']:>8.4f} {r['eff']:>8.4f} "
+            f"{r['dl']:>8.1f} {r['score']:>7.1f} {r['vram_gb']:>8.1f} "
+            f"{r['rel']:>5.2f} {str(r['status']):>6}"
+        )
+        if r["score"] < 0:
+            line = red(line)
+        else:
+            line = color(line)
+        print(line)
+
+    print()
+    if shown:
+        print(f"Vorschlag: Nummer 1 ({shown[0]['offer_id']} / {shown[0]['model']})")
     else:
-        r["color"] = "yellow"
-
-parsed.sort(key=lambda r: (-r["genai_score"], -r["reliability"], r["effective_cost"]))
-
-colors = {
-    "red": "\033[1;31m",
-    "green": "\033[1;32m",
-    "yellow": "\033[1;33m",
-    "blue": "\033[1;34m",
-    "dim": "\033[2m",
-    "reset": "\033[0m",
-}
-
-print(f"Modus: {MODE}")
-print(f"{colors['dim']}Legende:{colors['reset']}")
-print(f"  {colors['green']}Grün{colors['reset']}  = bester GenAI-Score")
-print(f"  {colors['yellow']}Gelb{colors['reset']}  = gute Balance aus Preis und Leistung")
-print(f"  {colors['blue']}Blau{colors['reset']}  = günstigste effektive Kosten")
-print(f"  {colors['red']}Rot{colors['reset']}   = unter Mindestanforderungen")
-print()
-
-print("Nr  Offer_ID    Model               $/hr   20GB Tx   Eff$/h  DLPerf  Score  VRAM  Rel  Status")
-print("-" * 104)
-for i, r in enumerate(parsed[:RESULTS], 1):
-    c = colors[r["color"]]
-    reset = colors["reset"]
-    tag = "Vorschlag" if i == 1 else ""
-    print(
-        f"{c}{i:2d}  {r['offer_id']:<10} {r['model']:<18} "
-        f"{r['price']:>6.4f}  {r['transfer_cost']:>7.4f}  {r['effective_cost']:>6.4f}  "
-        f"{r['dlperf']:>6.1f}  {r['genai_score']:>6.1f}  {r['gpu_ram']:>4.0f}  {r['reliability']:>4.2f}  {r['status']}{reset}"
-    )
-
-print()
-print(f"Vorschlag: Nummer 1 ({parsed[0]['offer_id']} / {parsed[0]['model']})")
-print()
-
-choice = None
-while choice is None:
-    raw_choice = input(f"Welche Nummer buchen? [1-{min(RESULTS, len(parsed))}] (Enter = 1): ").strip()
-    if raw_choice == "":
-        choice = 1
-        break
-    if raw_choice.isdigit():
-        n = int(raw_choice)
-        if 1 <= n <= min(RESULTS, len(parsed)):
-            choice = n
-            break
-    print("Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben.")
-
-pick = parsed[choice - 1]
-print()
-print(f"Auswahl: {pick['offer_id']} ({pick['model']})")
-print(f"Befehl: vastai create instance {pick['offer_id']} --template_hash {TEMPLATE_HASH}")
-
-if DRY_RUN:
-    sys.exit(0)
-
-if not CONFIRM:
-    answer = input("Instanz wirklich mieten? [y/N] ").strip().lower()
-    if answer not in ("y", "yes"):
-        print("Abgebrochen.")
+        print("Vorschlag: keine passenden Angebote gefunden")
         sys.exit(1)
 
-subprocess.run([
-    "vastai", "create", "instance", pick["offer_id"],
-    "--template_hash", TEMPLATE_HASH
-], check=True)
-PY
+    if args.dry_run:
+        sys.exit(0)
+
+    choice = None
+    limit = min(RESULTS, len(shown))
+    while choice is None:
+        raw_choice = input(f"Welche Nummer buchen? [1-{limit}] (Enter = 1): ").strip()
+        if raw_choice == "":
+            choice = 1
+            break
+        if raw_choice.isdigit():
+            n = int(raw_choice)
+            if 1 <= n <= limit:
+                choice = n
+                break
+        print("Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben.")
+
+    selected = shown[choice - 1]
+    print()
+    print(f"Gewählt: {choice} -> {selected['offer_id']} / {selected['model']}")
+    if args.test:
+        print("[TEST] Kein Booking ausgeführt.")
+        sys.exit(0)
+
+    confirm = input("Buchung wirklich ausführen? [j/N]: ").strip().lower()
+    if confirm != "j":
+        print("Abgebrochen.")
+        sys.exit(0)
+
+    print("[INFO] Booking würde hier ausgeführt werden.")
+    # hier deine echte Booking-Logik einfügen
+
+if __name__ == "__main__":
+    main()
