@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_VERSION="2026-05-24.5"
+SCRIPT_VERSION="2026-05-24.6"
 
 if [[ "${1:-}" == "--version" ]]; then
   echo "$SCRIPT_VERSION"
@@ -72,7 +72,7 @@ trap 'rm -f "$RAW_FILE"' EXIT
 vastai search offers "$QUERY" --raw -o 'dlperf_usd-' > "$RAW_FILE"
 
 python3 - "$MODE" "$RESULTS" "$DRY_RUN" "$CONFIRM" "$TEMPLATE_HASH" "$RAW_FILE" "$MODEL_GB" "$MIN_GPU_RAM" "$MIN_RELIABILITY" <<'PY'
-import sys, json, subprocess, math
+import sys, json, subprocess
 
 MODE = sys.argv[1]
 RESULTS = int(sys.argv[2])
@@ -199,13 +199,31 @@ print("-" * 104)
 for i, r in enumerate(parsed[:RESULTS], 1):
     c = colors[r["color"]]
     reset = colors["reset"]
+    tag = "Vorschlag" if i == 1 else ""
     print(
         f"{c}{i:2d}  {r['offer_id']:<10} {r['model']:<18} "
         f"{r['price']:>6.4f}  {r['transfer_cost']:>7.4f}  {r['effective_cost']:>6.4f}  "
         f"{r['dlperf']:>6.1f}  {r['genai_score']:>6.1f}  {r['gpu_ram']:>4.0f}  {r['reliability']:>4.2f}  {r['status']}{reset}"
     )
 
-pick = parsed[0]
+print()
+print(f"Vorschlag: Nummer 1 ({parsed[0]['offer_id']} / {parsed[0]['model']})")
+print()
+
+choice = None
+while choice is None:
+    raw_choice = input(f"Welche Nummer buchen? [1-{min(RESULTS, len(parsed))}] (Enter = 1): ").strip()
+    if raw_choice == "":
+        choice = 1
+        break
+    if raw_choice.isdigit():
+        n = int(raw_choice)
+        if 1 <= n <= min(RESULTS, len(parsed)):
+            choice = n
+            break
+    print("Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben.")
+
+pick = parsed[choice - 1]
 print()
 print(f"Auswahl: {pick['offer_id']} ({pick['model']})")
 print(f"Befehl: vastai create instance {pick['offer_id']} --template_hash {TEMPLATE_HASH}")
