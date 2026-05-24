@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.8"
+VERSION="2026-05-24.9"
 RESULTS=10
 TX_GB=20.0
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
-MIN_DL_PERF=0.0
 VAST_URL="https://console.vast.ai/api/v0/bundles"
 
 usage() {
@@ -27,7 +26,6 @@ green(){ c 32 "$1"; }
 yellow(){ c 33 "$1"; }
 blue(){ c 34 "$1"; }
 red(){ c 31 "$1"; }
-bold(){ c 1 "$1"; }
 
 get_auth() {
   if [[ -n "${VAST_AUTH:-}" ]]; then
@@ -45,16 +43,14 @@ get_json() {
   local auth="$1"
   curl -fsSL --max-time 30 \
     -H "Authorization: Bearer ${auth}" \
-    "$VAST_URL?q={\"verified\":{\"eq\":true}}&limit=200&order=-gpu_total_ram"
-}
-
-extract() {
-  jq -r "$1"
+    -H "Content-Type: application/json" \
+    -d '{"verified":{"eq":true},"rentable":{"eq":true},"limit":200,"order":"-gpu_total_ram"}' \
+    "$VAST_URL/"
 }
 
 score_offer() {
-  local price="$1" eff="$2" dl="$3" rel="$4" vram="$5"
-  awk -v price="$price" -v eff="$eff" -v dl="$dl" -v rel="$rel" -v vram="$vram" -v minv="$MIN_VRAM_GB" -v minr="$MIN_REL" '
+  local eff="$1" dl="$2" rel="$3" vram="$4"
+  awk -v eff="$eff" -v dl="$dl" -v rel="$rel" -v vram="$vram" -v minv="$MIN_VRAM_GB" -v minr="$MIN_REL" '
     BEGIN {
       if (vram < minv || rel < minr) { print -1; exit }
       price_score = 1.0 / (eff > 0.0001 ? eff : 0.0001)
@@ -63,15 +59,6 @@ score_offer() {
       dl_bonus = dl / 100.0
       print (price_score * 0.45) + (dl_bonus * 0.35) + (vram_bonus * 0.15) + (rel * 0.05)
     }'
-}
-
-classify_color() {
-  case "$1" in
-    0) echo green ;;
-    1|2) echo yellow ;;
-    3|4) echo blue ;;
-    *) echo cat ;;
-  esac
 }
 
 main() {
@@ -107,18 +94,19 @@ main() {
   json="$(get_json "$AUTH")"
 
   mapfile -t rows < <(printf '%s' "$json" | jq -r '
-    def get($a; $b): ($a[$b] // empty);
     def num($x): (try ($x|tonumber) catch 0);
-    def model: (get(. ; "gpu_name") // get(. ; "gpu") // get(. ; "model") // "unknown");
-    def oid: (get(. ; "id") // get(. ; "offer_id") // "");
-    def price: num(get(. ; "dph_total") // get(. ; "price") // get(. ; "hourly_price"));
-    def tx: num(.tx_cost_20gb // 0);
-    def eff: (price + tx);
-    def dl: num(get(. ; "dlperf") // get(. ; "dl_performance"));
-    def rel: num(get(. ; "reliability") // get(. ; "rel") // 1);
-    def vram: (num(get(. ; "gpu_ram") // get(. ; "gpu_total_ram") // get(. ; "vram")) / 1024);
-    def status: (get(. ; "verified") // get(. ; "status") // true);
-    [oid, model, price, tx, eff, dl, rel, vram, status] | @tsv
+    def val($a; $b): ($a[$b] // empty);
+    [
+      (val(. ; "id") // val(. ; "offer_id") // ""),
+      (val(. ; "gpu_name") // val(. ; "gpu") // val(. ; "model") // "unknown"),
+      num(val(. ; "dph_total") // val(. ; "price") // val(. ; "hourly_price")),
+      num(.tx_cost_20gb // 0),
+      (num(val(. ; "dph_total") // val(. ; "price") // val(. ; "hourly_price")) + num(.tx_cost_20gb // 0)),
+      num(val(. ; "dlperf") // val(. ; "dl_performance")),
+      num(val(. ; "reliability") // val(. ; "rel") // 1),
+      (num(val(. ; "gpu_ram") // val(. ; "gpu_total_ram") // val(. ; "vram")) / 1024),
+      (val(. ; "verified") // val(. ; "status") // true)
+    ] | @tsv
   ')
 
   if [[ ${#rows[@]} -eq 0 ]]; then
@@ -128,40 +116,35 @@ main() {
 
   tmpfile="$(mktemp)"
   {
-    printf '%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\n' "offer_id" "model" "price" "tx" "eff" "dl" "score" "vram_gb" "rel" "status"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "offer_id" "model" "price" "tx" "eff" "dl" "rel" "vram_gb" "status" "score"
     for row in "${rows[@]}"; do
       IFS=$'\t' read -r oid model price tx eff dl rel vram status <<< "$row"
-      score="$(score_offer "$price" "$eff" "$dl" "$rel" "$vram")"
-      printf '%s\t%s\t%.4f\t%.4f\t%.4f\t%.1f\t%.1f\t%.1f\t%.2f\t%s\n' \
-        "$oid" "$model" "$price" "$tx" "$eff" "$dl" "$score" "$vram" "$rel" "$status"
+      score="$(score_offer "$eff" "$dl" "$rel" "$vram")"
+      printf '%s\t%s\t%.4f\t%.4f\t%.4f\t%.1f\t%.2f\t%.1f\t%s\t%.1f\n' \
+        "$oid" "$model" "$price" "$tx" "$eff" "$dl" "$rel" "$vram" "$status" "$score"
     done
   } > "$tmpfile"
 
-  mapfile -t sorted < <(tail -n +2 "$tmpfile" | sort -t $'\t' -k7,7nr -k5,5n)
+  mapfile -t sorted < <(tail -n +2 "$tmpfile" | sort -t $'\t' -k10,10nr -k5,5n)
 
-  printf '%-3s %-10s %-18s %7s %8s %8s %8s %7s %8s %5s %6s\n' "Nr" "Offer_ID" "Model" "$/hr" "20GB Tx" "Eff$/h" "DLPerf" "Score" "VRAM GB" "Rel" "Status"
+  printf '%-3s %-10s %-18s %7s %8s %8s %8s %7s %8s %5s %6s\n' "Nr" "Offer_ID" "Model" "\$/hr" "20GB Tx" "Eff$/h" "DLPerf" "Score" "VRAM GB" "Rel" "Status"
   printf '%s\n' "--------------------------------------------------------------------------------------------------------"
 
   limit=$(( RESULTS < ${#sorted[@]} ? RESULTS : ${#sorted[@]} ))
   for ((i=0; i<limit; i++)); do
-    IFS=$'\t' read -r oid model price tx eff dl score vram rel status <<< "${sorted[$i]}"
+    IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${sorted[$i]}"
     line=$(printf '%-3s %-10s %-18s %7.4f %8.4f %8.4f %8.1f %7.1f %8.1f %5.2f %6s' \
       "$((i+1))" "$oid" "$model" "$price" "$tx" "$eff" "$dl" "$score" "$vram" "$rel" "$status")
-    if awk -v s="$score" 'BEGIN{exit !(s < 0)}'; then
-      red "$line"
-    else
-      case "$i" in
-        0) green "$line" ;;
-        1|2) yellow "$line" ;;
-        3|4) blue "$line" ;;
-        *) printf '%s' "$line" ;;
-      esac
-    fi
+    case "$i" in
+      0) green "$line" ;;
+      1|2) yellow "$line" ;;
+      3|4) blue "$line" ;;
+      *) printf '%s' "$line" ;;
+    esac
     printf '\n'
   done
 
-  best="${sorted[0]}"
-  IFS=$'\t' read -r oid model price tx eff dl score vram rel status <<< "$best"
+  IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${sorted[0]}"
   echo
   echo "Vorschlag: Nummer 1 ($oid / $model)"
 
@@ -182,8 +165,7 @@ main() {
     fi
   done
 
-  selected="${sorted[$((choice-1))]}"
-  IFS=$'\t' read -r oid model price tx eff dl score vram rel status <<< "$selected"
+  IFS=$'\t' read -r oid model price tx eff dl rel vram status score <<< "${sorted[$((choice-1))]}"
   echo
   echo "Gewählt: $choice -> $oid / $model"
 
