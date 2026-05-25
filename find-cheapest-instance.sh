@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-25.04"
+VERSION="2026-05-25.05"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -505,7 +505,7 @@ PY
   IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$best_idx]}"
 
   echo
-  echo "Vorschlag: Nummer $((best_idx+1)) ($oid / $model)"
+  echo "Vorschlag: Nummer $((best_idx+1)) ($oid / $model / ${country})"
   echo "  - Stundenpreis: $(fmt2 "$price") $/h"
   echo "  - Initiale 20GB-Beladung: $(fmt2 "$tx") $"
   echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: $(fmt2 "$eff") $/h"
