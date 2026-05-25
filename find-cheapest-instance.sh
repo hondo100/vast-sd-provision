@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-25.12"
+VERSION="2026-05-25.13"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
