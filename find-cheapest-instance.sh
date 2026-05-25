@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-25.05"
+VERSION="2026-05-25.07"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -61,7 +61,7 @@ ENTDECKUNGEN / FINDINGS / LOGIK
 3) CHINA-FILTER:
    - location_country ist KEIN gueltiges Vast-Suchfeld.
    - Deshalb keine serverseitige China-Filterung.
-   - Clientseitig werden Angebote mit location_country/dl_location/location
+   - Clientseitig werden Angebote mit location_country/country/dl_location/location
      auf CN / China / CHINA gefiltert.
 
 4) TABELLENFORMAT:
@@ -381,7 +381,7 @@ for o in offers[:search_limit]:
     direct_ports = first_num(o, ['direct_port_count'], 0.0)
     verified = first_str(o, ['verification', 'verified'], 'True')
 
-    loc_country = first_str(o, ['location_country', 'dl_location', 'location'], '').upper().strip()
+    loc_country = first_str(o, ['location_country', 'country', 'dl_location', 'location'], '').upper().strip()
     if loc_country and any(x in loc_country for x in ['CN', 'HINA', 'CHINA']):
         continue
 
@@ -413,7 +413,7 @@ for o in offers[:search_limit]:
         'dlperf_usd': dlperf_usd, 'rel': rel, 'vram': vram,
         'inet_down': inet_down, 'disk_space': disk_space,
         'direct_ports': direct_ports, 'verified': verified,
-        'country': first_str(o, ['location_country', 'dl_location', 'location'], '--'),
+        'country': first_str(o, ['location_country', 'country', 'dl_location', 'location'], 'unknown'),
         'est_model_dl_min': est_model_dl_min, 'est_ready_min': est_ready_min,
         'est_model_dl_min_rounded': int(round(est_model_dl_min)),
         'est_ready_min_rounded': int(round(est_ready_min)),
@@ -482,7 +482,7 @@ PY
   fi
 
   local best_idx=0
-  printf '%-3s %-10s %-22s %4s %7s %7s %8s %8s %7s %7s %8s %8s %8s %7s %s\n' \
+  printf '%-3s %-10s %-14s %4s %7s %7s %8s %8s %7s %7s %8s %8s %8s %7s %s\n' \
     "Nr" "Offer_ID" "Model" "GPUx" "$/hr" "Init$" "Eff$/h" "DLMB/s" "DL20m" "Readym" "VRAM" "Ports" "Country" "Score" "Ver"
   printf '%s\n' "------------------------------------------------------------------------------------------------------------------------------------------"
 
@@ -490,7 +490,8 @@ PY
     local oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score line
     IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
-    line=$(printf '%-3s %-10s %-22s %4.0f %7.2f %7.2f %8.2f %8.0f %7.0f %7.0f %8.1f %8.0f %8s %7.2f %s' \
+    if [[ -z "${country// }" || "$country" == "--" ]]; then country="unknown"; fi
+    line=$(printf '%-3s %-10s %-14s %4.0f %7.2f %7.2f %8.2f %8.0f %7.0f %7.0f %8.1f %8.0f %8s %7.2f %s' \
       "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min_r" "$est_ready_min_r" "$vram" "$ports" "$country" "$score" "$verified")
     case "$i" in
       0) green "$line" ;;
