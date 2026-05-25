@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eEuo pipefail
 
-VERSION="2026-05-25.14"
+VERSION="2026-05-25.15"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
 # ============================================================================ #
 
 RESULTS=10
-SEARCH_LIMIT=120 # Erhöht, da durch den GPU-Filter mehr Rohdaten gesichtet werden müssen
+SEARCH_LIMIT=120 
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 SORT='dlperf_usd-'
 
@@ -101,7 +101,19 @@ WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
       Python-Parser übergeben, der den Feldwert `gpu_name` filtert (z.B. restriktiv
       nur 3090er oder 4090er Klassen zulässt).
 13) Nach jedem groesseren Edit:
-     bash -n ./find-cheapest-instance.sh
+      bash -n ./find-cheapest-instance.sh
+
+========================================================================
+ÄNDERUNGSHISTORIE
+========================================================================
+v2026-05-25.14:
+  - Clientseitiger China-Filter und Tabellenformatierung optimiert.
+v2026-05-25.15 (Aktuelle Version):
+  - FEHLENDE BUCHUNGSLOGIK BEHOBEN: Der Parameter --book setzt nun am Ende
+    der main() die automatisierte Instanz-Erstellung via vastai um.
+  - HÄRTUNG GEGEN set -e: Der API-Aufruf fängt Fehler sauber ab und verhindert
+    einen stummen Skript-Abbruch.
+========================================================================
 SCRIPT_OVERVIEW
 
 usage() {
@@ -288,7 +300,6 @@ rows = []
 for o in offers[:search_limit]:
     if not isinstance(o, dict): continue
     
-    # 1. GPU-Modellprüfung gegen den konfigurierten Regex-Filter
     gpu_name_raw = first_str(o, ['gpu_name', 'gpu', 'model'], 'unknown')
     if not re.search(gpu_filter_regex, gpu_name_raw, re.IGNORECASE):
         continue
@@ -412,6 +423,35 @@ PY
   echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: $(fmt2 "$eff") $/h"
   echo "  - Standort: ${country}"
   echo
+
+  # ==========================================================================
+  # NEU: BUCHUNGSLOGIK (Wird durch --book aktiviert)
+  # ==========================================================================
+  if [[ "${DO_BOOK}" -eq 1 ]]; then
+    if [[ -z "${oid:-}" ]]; then
+      echo "[ERR] Buchung nicht moeglich: Keine gueltige Offer-ID gefunden." >&2
+      exit 10
+    fi
+
+    echo "[INFO] --book gesetzt. Starte automatische Instanzbuchung..."
+    echo "[INFO] Bucht Offer ID: $oid mit Template Hash: $TEMPLATE_HASH und ${DISK_GB} GB Disk."
+    
+    local book_output
+    # if ! konsumiert den Exit-Code, set -e bricht hier NICHT unkontrolliert ab
+    if ! book_output=$(vast_cmd create instance "$oid" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" 2>&1); then
+      echo "[ERR] Vast.ai API-Buchungsbefehl fehlgeschlagen!" >&2
+      echo "[DETAILS]:" >&2
+      echo "$book_output" >&2
+      exit 12
+    fi
+
+    echo "[OK] Instanz-Erstellung erfolgreich an Vast.ai uebermittelt!"
+    echo "------------------------------------------------------------------"
+    echo "$book_output"
+    echo "------------------------------------------------------------------"
+  else
+    echo "[INFO] Suchmodus aktiv. Es wurde keine Buchung vorgenommen (Fuer Buchung '--book' anfuegen)."
+  fi
 }
 
 main "$@"
