@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-25.07"
+VERSION="2026-05-25.08"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -63,6 +63,8 @@ ENTDECKUNGEN / FINDINGS / LOGIK
    - Deshalb keine serverseitige China-Filterung.
    - Clientseitig werden Angebote mit location_country/country/dl_location/location
      auf CN / China / CHINA gefiltert.
+   - Country wird zusätzlich aus Standorttexten wie "Spain, ES" oder "Czechia, CZ"
+     normalisiert, wenn kein direktes Länderkürzel geliefert wird.
 
 4) TABELLENFORMAT:
    - Jede Zeile wird in exakt dieselbe Spaltenreihenfolge ausgegeben,
@@ -306,7 +308,7 @@ main() {
   parsed="$(
     DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" \
     python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BASE_BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" "$REF_DL_MBPS" "$REF_TOTAL_OVERHEAD_MIN" <<'PY'
-import json, os, sys
+import json, os, re, sys
 json_path = sys.argv[1]
 search_limit = int(sys.argv[2])
 model_gb = float(sys.argv[3])
@@ -334,6 +336,18 @@ def first_num(d, keys, default=0.0):
             except Exception:
                 pass
     return float(default)
+
+def country_code(val):
+    s = str(val or '').strip()
+    if not s or s in {'--', 'unknown'}:
+        return 'unknown'
+    u = s.upper()
+    if u in {'CN', 'DE', 'ES', 'BE', 'CZ', 'PL', 'US', 'NL', 'FR', 'IT', 'GB', 'UK', 'CA', 'SE', 'FI', 'AT', 'CH', 'PT', 'IE', 'DK', 'NO', 'RO'}:
+        return u
+    m = re.search(r'\b([A-Z]{2})\b', u)
+    if m:
+        return m.group(1)
+    return s
 
 text = open(json_path, 'r', encoding='utf-8', errors='replace').read().strip()
 if not text:
@@ -413,7 +427,7 @@ for o in offers[:search_limit]:
         'dlperf_usd': dlperf_usd, 'rel': rel, 'vram': vram,
         'inet_down': inet_down, 'disk_space': disk_space,
         'direct_ports': direct_ports, 'verified': verified,
-        'country': first_str(o, ['location_country', 'country', 'dl_location', 'location'], 'unknown'),
+        'country': country_code(first_str(o, ['location_country', 'country', 'dl_location', 'location'], 'unknown')),
         'est_model_dl_min': est_model_dl_min, 'est_ready_min': est_ready_min,
         'est_model_dl_min_rounded': int(round(est_model_dl_min)),
         'est_ready_min_rounded': int(round(est_ready_min)),
