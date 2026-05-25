@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-25.02"
+VERSION="2026-05-25.04"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -106,7 +106,7 @@ color_supported() { [[ "${COLOR_ENABLED_AUTO}" -eq 1 && -t 1 ]]; }
 c() {
   local code="$1"; shift
   local text="$1"
-  if color_supported; then printf '[%sm%s[0m' "$code" "$text"; else printf '%s' "$text"; fi
+  if color_supported; then printf '\033[%sm%s\033[0m' "$code" "$text"; else printf '%s' "$text"; fi
 }
 green()  { c 32 "$1"; }
 yellow() { c 33 "$1"; }
@@ -304,7 +304,8 @@ main() {
 
   local parsed
   parsed="$(
-    DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT"     python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BASE_BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" "$REF_DL_MBPS" "$REF_TOTAL_OVERHEAD_MIN" <<'PY'
+    DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" \
+    python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BASE_BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" "$REF_DL_MBPS" "$REF_TOTAL_OVERHEAD_MIN" <<'PY'
 import json, os, sys
 json_path = sys.argv[1]
 search_limit = int(sys.argv[2])
@@ -412,13 +413,14 @@ for o in offers[:search_limit]:
         'dlperf_usd': dlperf_usd, 'rel': rel, 'vram': vram,
         'inet_down': inet_down, 'disk_space': disk_space,
         'direct_ports': direct_ports, 'verified': verified,
+        'country': first_str(o, ['location_country', 'dl_location', 'location'], '--'),
         'est_model_dl_min': est_model_dl_min, 'est_ready_min': est_ready_min,
         'est_model_dl_min_rounded': int(round(est_model_dl_min)),
         'est_ready_min_rounded': int(round(est_ready_min)),
     })
 
 for r in rows:
-    print('	'.join([
+    print('\t'.join([
         str(r['oid']),
         str(r['model']),
         str(int(round(r['num_gpus']))),
@@ -430,6 +432,7 @@ for r in rows:
         f"{r['dlperf_usd']:.6f}",
         f"{r['rel']:.6f}",
         f"{r['vram']:.6f}",
+        str(r['country']),
         f"{r['inet_down']:.6f}",
         f"{r['disk_space']:.6f}",
         f"{r['direct_ports']:.6f}",
@@ -451,8 +454,7 @@ PY
   fi
 
   local -a rows
-  mapfile -t rows < <(printf '%s
-' "$parsed")
+  mapfile -t rows < <(printf '%s\n' "$parsed")
 
   echo "Legende:"
   echo "  Grün  = bester GenAI-Score"
@@ -463,15 +465,14 @@ PY
   local -a scored_rows=()
   local i
   for ((i=0; i<${#rows[@]}; i++)); do
-    local oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score
-    IFS=$'	' read -r oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
+    local oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score
+    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
-    scored_rows+=("${score}"$'	'"${rows[$i]}")
+    scored_rows+=("${score}"$'\t'"${rows[$i]}")
   done
 
   mapfile -t rows < <(
-    printf '%s
-' "${scored_rows[@]}" | sort -t $'	' -k1,1gr | cut -f2- | head -n "$RESULTS"
+    printf '%s\n' "${scored_rows[@]}" | sort -t $'\t' -k1,1gr | cut -f2- | head -n "$RESULTS"
   )
 
   local limit=${#rows[@]}
@@ -481,28 +482,27 @@ PY
   fi
 
   local best_idx=0
-  printf '%-3s %-10s %-18s %4s %7s %7s %8s %8s %7s %7s %8s %8s %s
-'     "Nr" "Offer_ID" "Model" "GPUx" "\$/hr" "Init$" "Eff$/h" "DLMB/s" "DL20m" "Readym" "VRAM" "Score" "Ver"
-  printf '%s
-' "----------------------------------------------------------------------------------------------------------------"
+  printf '%-3s %-10s %-22s %4s %7s %7s %8s %8s %7s %7s %8s %8s %8s %7s %s\n' \
+    "Nr" "Offer_ID" "Model" "GPUx" "$/hr" "Init$" "Eff$/h" "DLMB/s" "DL20m" "Readym" "VRAM" "Ports" "Country" "Score" "Ver"
+  printf '%s\n' "------------------------------------------------------------------------------------------------------------------------------------------"
 
   for ((i=0; i<limit; i++)); do
-    local oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score line
-    IFS=$'	' read -r oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
+    local oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score line
+    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
-    line=$(printf '%-3s %-10s %-18s %4.0f %7.2f %7.2f %8.2f %8.0f %7.0f %7.0f %8.1f %8.2f %s'       "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min_r" "$est_ready_min_r" "$vram" "$score" "$verified")
+    line=$(printf '%-3s %-10s %-22s %4.0f %7.2f %7.2f %8.2f %8.0f %7.0f %7.0f %8.1f %8.0f %8s %7.2f %s' \
+      "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min_r" "$est_ready_min_r" "$vram" "$ports" "$country" "$score" "$verified")
     case "$i" in
       0) green "$line" ;;
       1|2) yellow "$line" ;;
       3|4) blue "$line" ;;
       *) printf '%s' "$line" ;;
     esac
-    printf '
-'
+    printf '\n'
   done
 
-  local oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified
-  IFS=$'	' read -r oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$best_idx]}"
+  local oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified
+  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$best_idx]}"
 
   echo
   echo "Vorschlag: Nummer $((best_idx+1)) ($oid / $model)"
@@ -513,7 +513,8 @@ PY
   echo "  - Geschaetzte 20GB-Downloadzeit: ${est_dl_min_r} min"
   echo "  - Geschaetzte Bereitstellung (inkl. Overhead): ${est_ready_min_r} min"
   echo "  - Monatliche Storage-Kosten fuer 20GB: $(fmt2 "$month") $/Monat"
-  echo "  - DLPerf: $(fmt2 "$dl"), DLPerf/$: $(fmt2 "$dlu"), VRAM: $(fmt2 "$vram") GB, Ports: $(fmt2 "$ports")"
+  echo "  - DLPerf: $(fmt2 "$dl"), DLPerf/$: $(fmt2 "$dlu"), VRAM: $(fmt2 "$vram") GB, Country: ${country}, Ports: $(fmt2 "$ports")"
+  echo "  - Hinweis: In der Auswahl kann mit q das Skript beendet werden."
   echo
 
   if [[ $dry -eq 1 ]]; then
@@ -523,17 +524,20 @@ PY
 
   local choice=""
   while [[ -z "$choice" ]]; do
-    read -r -p "Welche Nummer verwenden? [1-$limit] (Enter = $((best_idx+1))): " raw_choice
-    if [[ -z "$raw_choice" ]]; then
+    read -r -p "Welche Nummer verwenden? [1-$limit] (Enter = $((best_idx+1)), q=quit): " raw_choice
+    if [[ "${raw_choice,,}" == "q" ]]; then
+      echo "Abgebrochen."
+      exit 0
+    elif [[ -z "$raw_choice" ]]; then
       choice="$((best_idx+1))"
     elif [[ "$raw_choice" =~ ^[0-9]+$ ]] && (( raw_choice >= 1 && raw_choice <= limit )); then
       choice="$raw_choice"
     else
-      echo "Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben."
+      echo "Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben oder q zum Beenden."
     fi
   done
 
-  IFS=$'	' read -r oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$((choice-1))]}"
+  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$((choice-1))]}"
 
   echo
   echo "Gewählt: $choice -> $oid / $model"
@@ -601,7 +605,7 @@ try:
                     raise SystemExit(0)
 except Exception:
     pass
-m = re.search(r'([0-9]{4,})', txt)
+m = re.search(r'\b([0-9]{4,})\b', txt)
 if m:
     print(m.group(1))
 PY
