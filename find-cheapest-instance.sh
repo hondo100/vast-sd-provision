@@ -1,43 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-25.01"
+VERSION="2026-05-25.02"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
 # ============================================================================ #
 
-# Such- und Auswahlparameter
 RESULTS=10
 SEARCH_LIMIT=60
-# location_country ist KEIN valides Vast-Suchfeld => FILTERN wirft Fehler
-# Deshalb: nur serverseitig die Basis-Filter, China-Filterung im Python-Code
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 SORT='dlperf_usd-'
 
-# Modell- und Wirtschaftlichkeitsannahmen
 MODEL_GB=20
 SESSION_HOURS=3
 MIN_VRAM_GB=24.0
 MIN_REL=0.95
 MIN_DISK_GB=40
 
-# Download- und Ready-Zeit-Modell
 DOWNLOAD_EFFICIENCY=0.75
-BASE_BOOT_OVERHEAD_MIN=1.0           # theoretischer Minimal-Overhead (Boot/Launcher)
-REF_DL_MBPS=1370.0                    # empirische Netto-Bandbreite, bei der du 7 Minuten gesehen hast
-REF_TOTAL_OVERHEAD_MIN=7.0            # gemessene 7 Minuten Init-Overhead bei 1370 Mb/s
+BASE_BOOT_OVERHEAD_MIN=1.0
+REF_DL_MBPS=1370.0
+REF_TOTAL_OVERHEAD_MIN=7.0
 
-# Buchungsdefaults
 DO_BOOK=0
 DISK_GB=40
 TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
 
-# Debug / Diagnose
 DEBUG_JSON=0
 DEBUG_JSON_LIMIT=2
-
-# Ausgabe / Anzeige
 COLOR_ENABLED_AUTO=1
 
 : <<'SCRIPT_OVERVIEW'
@@ -49,14 +40,10 @@ ZWECK
 - Es bewertet die geschaetzte Downloadzeit fuer 20GB
   sowie die geschaetzte Gesamt-Bereitstellungszeit.
 
-- Es filtert chinesische Angebote:
-   - serverseitig: keine location_country-Filterung (wird vom Vast-CLI nicht unterstützt)
-   - clientseitig: Python-Filter auf location_country/dl_location
-
-- Es verfeinert die Bereitstellungszeit-Schaetzung:
-   - Nutzung des beobachteten Overheads (ca. 7 Minuten bei 1370 Mb/s).
-   - Berechnung eines netzwerkhaengigen "Initial Overhead",
-     der bei schnellen Verbindungen ansteigt.
+- Es filtert chinesische Angebote nur clientseitig im Python-Parser.
+- Serverseitig werden nur von Vast unterstuetzte Suchfilter verwendet.
+- Die Bereitstellungszeit-Schaetzung nutzt eine empirische Referenz:
+  bei 1370 Mb/s betrug der Initial-Overhead ca. 7 Minuten.
 
 ========================================================================
 ENTDECKUNGEN / FINDINGS / LOGIK
@@ -65,47 +52,28 @@ ENTDECKUNGEN / FINDINGS / LOGIK
    - Bei 1370 Mb/s habe ich beobachtet:
      - 20GB-Download selbst dauert kurz,
      - aber die Gesamt-Bereitstellung (inkl. Setup, Datei-/Model-I/O) ca. 7 Minuten.
-   - Also: Hohe Netzgeschwindigkeit => additiver Initial-Overhead von 7 Minuten
-          ueber die reine Downloadzeit.
 
 2) MODELL:
-   - Wir trennen:
-        - Download-Zeit (nur Netzwerk)
-        - zusätzlicher Overhead, der von der Netzgeschwindigkeit abhaengt.
-   - Fuer sehr langsame Verbindungen dominiert Download-Zeit.
-   - Fuer schnelle Verbindungen (z. B. 1370 Mb/s) bleibt der Overhead stabil bei 7 Minuten.
+   - Download-Zeit = reine Netzzeit.
+   - Zusatz-Overhead steigt bei schnelleren Verbindungen nicht weiter an,
+     sondern bleibt an der Referenz orientiert.
 
-3) FORMEL:
-   - Baseline:
-        base_boot_overhead_min = 1.0 (reiner Boot-/Launcher-Overhead)
-   - Referenz:
-        ref_dl_mbps = 1370.0 (deine gemessene Netto-Geschwindigkeit)
-        ref_total_overhead_min = 7.0 (gemessene 7 Minuten)
+3) CHINA-FILTER:
+   - location_country ist KEIN gueltiges Vast-Suchfeld.
+   - Deshalb keine serverseitige China-Filterung.
+   - Clientseitig werden Angebote mit location_country/dl_location/location
+     auf CN / China / CHINA gefiltert.
 
-   - scale = max(1370 / inet_down, 1.0)  -> 1.0 bei 1370, >1.0 bei langsamen Verbindungen
-   - additional_overhead = (7.0 - 1.0) * scale  -> 0 bei 1370, größer bei langsamen Verbindungen
-   - est_ready_min = est_model_dl_min + base_boot_overhead_min + additional_overhead
-
-4) CHINA-FILTER:
-   - Serverseitig: QUERY enthält KEIN location_country!=CN (nicht erlaubt).
-   - Clientseitig: Python prueft location_country/dl_location auf "CN"/"China".
-     Alle Angebote mit chinesischem Ursprung werden aus der Liste entfernt.
-
-5) Bewertung:
-   - Score basiert auf:
-        - Kosteneffizienz pro Stunde incl. erstmaliger Download-Kosten,
-        - dlperf, dlperf_usd, Reliability, VRAM, Downloadrate, Ports, etc.
-
-6) NUTZUNG:
-   - Script mit --book ausfuehren, um automatische Buchung zu aktivieren.
-   - Mit --dry-run nur Auswahl ohne Buchung.
-   - Info/Ausgabe zeigt Download- und Ready-Zeiten inkl. geschätztem Overhead an.
+4) TABELLENFORMAT:
+   - Jede Zeile wird in exakt dieselbe Spaltenreihenfolge ausgegeben,
+     damit keine Verschiebung mehr entsteht.
+   - verified hat eine eigene Spalte am Ende.
 
 ========================================================================
 WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
 ========================================================================
 1) Vast CLI + --raw ist der bevorzugte Suchpfad.
-2) location_country ist KEIN gültiges Suchfeld: Führt bei CLI-Aufruf zu Fehler.
+2) location_country ist KEIN gültiges Suchfeld: nicht in QUERY verwenden.
 3) Tabellen-Parsing vermeiden, JSON bevorzugen.
 4) Rohdiagnose vor Parserumbauten.
 5) Grosse JSON-Daten nie per Environment-Variable an Python uebergeben.
@@ -134,81 +102,38 @@ Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N]
 EOF
 }
 
-color_supported() {
-  [[ "${COLOR_ENABLED_AUTO}" -eq 1 && -t 1 ]]
-}
-
+color_supported() { [[ "${COLOR_ENABLED_AUTO}" -eq 1 && -t 1 ]]; }
 c() {
-  local code="$1"
-  shift
+  local code="$1"; shift
   local text="$1"
-  if color_supported; then
-    printf '\033[%sm%s\033[0m' "$code" "$text"
-  else
-    printf '%s' "$text"
-  fi
+  if color_supported; then printf '[%sm%s[0m' "$code" "$text"; else printf '%s' "$text"; fi
 }
-
 green()  { c 32 "$1"; }
 yellow() { c 33 "$1"; }
 blue()   { c 34 "$1"; }
 red()    { c 31 "$1"; }
 
-have_vast() {
-  command -v vastai >/dev/null 2>&1 || command -v vast >/dev/null 2>&1
-}
+have_vast() { command -v vastai >/dev/null 2>&1 || command -v vast >/dev/null 2>&1; }
 
 vast_bin() {
-  if command -v vastai >/dev/null 2>&1; then
-    echo "vastai"
-  else
-    echo "vast"
-  fi
+  if command -v vastai >/dev/null 2>&1; then echo "vastai"; else echo "vast"; fi
 }
 
 vast_cmd() {
-  if command -v vastai >/dev/null 2>&1; then
-    vastai "$@"
-  else
-    vast "$@"
-  fi
+  if command -v vastai >/dev/null 2>&1; then vastai "$@"; else vast "$@"; fi
 }
 
-fmt2() {
-  printf '%.2f' "${1:-0}"
-}
+fmt2() { printf '%.2f' "${1:-0}"; }
 
 score_offer() {
-  local eff_hour="$1"
-  local dl="$2"
-  local dlu="$3"
-  local rel="$4"
-  local vram="$5"
-  local numg="$6"
-  local ready_min="$7"
-  local dl_mbps="$8"
-
+  local eff_hour="$1" dl="$2" dlu="$3" rel="$4" vram="$5" numg="$6" ready_min="$7" dl_mbps="$8"
   python3 - "$eff_hour" "$dl" "$dlu" "$rel" "$vram" "$numg" "$ready_min" "$dl_mbps" "$MIN_VRAM_GB" "$MIN_REL" <<'PY'
-import math
-import sys
-
-eff       = float(sys.argv[1])
-dl        = float(sys.argv[2])
-dlu       = float(sys.argv[3])
-rel       = float(sys.argv[4])
-vram      = float(sys.argv[5])
-numg      = float(sys.argv[6])
-ready_min = float(sys.argv[7])
-dl_mbps   = float(sys.argv[8])
-minv      = float(sys.argv[9])
-minr      = float(sys.argv[10])
-
+import math, sys
+eff=float(sys.argv[1]); dl=float(sys.argv[2]); dlu=float(sys.argv[3]); rel=float(sys.argv[4]); vram=float(sys.argv[5]); numg=float(sys.argv[6]); ready_min=float(sys.argv[7]); dl_mbps=float(sys.argv[8]); minv=float(sys.argv[9]); minr=float(sys.argv[10])
 if vram < minv or rel < minr:
     print(-1.0)
     raise SystemExit(0)
-
 cost_score = 1.0 / max(eff, 0.0001)
-
 if vram < 24:
     vram_score = 0.0
 elif vram <= 28:
@@ -221,13 +146,11 @@ elif vram <= 80:
     vram_score = 1.18
 else:
     vram_score = 1.22
-
 rel_score = rel * rel
 dl_score = math.log(max(dl, 1.0))
 dlu_score = math.log(max(dlu, 1.0))
 net_score = math.log(max(dl_mbps, 1.0))
 ready_penalty = 1.0 / max(ready_min, 1.0)
-
 if numg <= 1:
     gpu_penalty = 1.00
 elif numg <= 2:
@@ -236,17 +159,7 @@ elif numg <= 4:
     gpu_penalty = 0.68
 else:
     gpu_penalty = 0.55
-
-score = (
-    cost_score    * 0.47 +
-    vram_score    * 0.16 +
-    rel_score     * 0.14 +
-    ready_penalty * 0.12 +
-    dlu_score     * 0.05 +
-    dl_score      * 0.03 +
-    net_score     * 0.03
-) * gpu_penalty
-
+score = (cost_score * 0.47 + vram_score * 0.16 + rel_score * 0.14 + ready_penalty * 0.12 + dlu_score * 0.05 + dl_score * 0.03 + net_score * 0.03) * gpu_penalty
 print(f"{score:.6f}")
 PY
 }
@@ -255,15 +168,12 @@ diag_raw() {
   local out_file err_file rc out_bytes err_bytes
   out_file="$(mktemp)"
   err_file="$(mktemp)"
-
   set +e
   vast_cmd search offers --raw "$QUERY" -o "$SORT" --limit "$SEARCH_LIMIT" >"$out_file" 2>"$err_file"
   rc=$?
   set -e
-
   out_bytes="$(wc -c <"$out_file" | tr -d ' ')"
   err_bytes="$(wc -c <"$err_file" | tr -d ' ')"
-
   echo "[DIAG] RC=$rc"
   echo "[DIAG] stdout bytes: $out_bytes"
   echo "[DIAG] stderr bytes: $err_bytes"
@@ -276,7 +186,6 @@ diag_raw() {
   head -c 1200 "$err_file" || true
   echo
   echo
-
   if [[ "$out_bytes" -eq 0 ]]; then
     echo "[ERR] stdout ist leer. Problem liegt vor dem Parser."
     echo "Pruefe Auth mit: $(vast_bin) show user"
@@ -284,30 +193,24 @@ diag_raw() {
     rm -f "$out_file" "$err_file"
     return 1
   fi
-
   if ! python3 - "$out_file" <<'PY'
-import json
-import sys
+import json, sys
 p = sys.argv[1]
-txt = open(p, "r", encoding="utf-8", errors="replace").read().strip()
+txt = open(p, 'r', encoding='utf-8', errors='replace').read().strip()
 json.loads(txt)
-print("JSON_OK")
+print('JSON_OK')
 PY
   then
     echo "[ERR] stdout enthaelt Daten, aber kein gueltiges JSON."
     rm -f "$out_file" "$err_file"
     return 1
   fi
-
   echo "[OK] --raw liefert JSON."
   rm -f "$out_file" "$err_file"
 }
 
 main() {
-  local test=0
-  local dry=0
-  local diag=0
-
+  local test=0 dry=0 diag=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --test) test=1 ;;
@@ -349,19 +252,9 @@ main() {
   echo "[INFO] Mindest-Disk im Query: ${MIN_DISK_GB} GB"
   echo "[INFO] Template-Hash fuer Buchung: ${TEMPLATE_HASH}"
   echo "[INFO] Disk fuer Buchung: ${DISK_GB} GB"
-  if [[ $DO_BOOK -eq 1 ]]; then
-    echo "[INFO] Buchungsmodus: AKTIV"
-  else
-    echo "[INFO] Buchungsmodus: AUS (nur Auswahl)"
-  fi
-  if [[ $test -eq 1 ]]; then
-    echo "Modus: test"
-  else
-    echo "Modus: live"
-  fi
-  if [[ $DEBUG_JSON -eq 1 ]]; then
-    echo "[INFO] Debug-JSON: aktiv (stderr)"
-  fi
+  if [[ $DO_BOOK -eq 1 ]]; then echo "[INFO] Buchungsmodus: AKTIV"; else echo "[INFO] Buchungsmodus: AUS (nur Auswahl)"; fi
+  if [[ $test -eq 1 ]]; then echo "Modus: test"; else echo "Modus: live"; fi
+  if [[ $DEBUG_JSON -eq 1 ]]; then echo "[INFO] Debug-JSON: aktiv (stderr)"; fi
   echo
 
   if [[ $diag -eq 1 ]]; then
@@ -411,53 +304,46 @@ main() {
 
   local parsed
   parsed="$(
-    DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" \
-    python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BASE_BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" "$REF_DL_MBPS" "$REF_TOTAL_OVERHEAD_MIN" <<'PY'
-import json
-import os
-import sys
-
+    DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT"     python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BASE_BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" "$REF_DL_MBPS" "$REF_TOTAL_OVERHEAD_MIN" <<'PY'
+import json, os, sys
 json_path = sys.argv[1]
 search_limit = int(sys.argv[2])
 model_gb = float(sys.argv[3])
 session_hours = float(sys.argv[4])
 min_vram_gb = float(sys.argv[5])
 min_rel = float(sys.argv[6])
-base_boot_overhead_min = float(sys.argv[7])      # 1.0
-download_efficiency = float(sys.argv[8])          # 0.75
-ref_dl_mbps = float(sys.argv[9])                  # 1370.0
-ref_total_overhead_min = float(sys.argv[10])      # 7.0
+base_boot_overhead_min = float(sys.argv[7])
+download_efficiency = float(sys.argv[8])
+ref_dl_mbps = float(sys.argv[9])
+ref_total_overhead_min = float(sys.argv[10])
+debug_json = int(os.environ.get('DEBUG_JSON', '0'))
+debug_limit = int(os.environ.get('DEBUG_JSON_LIMIT', '2'))
 
-debug_json = int(os.environ.get("DEBUG_JSON", "0"))
-debug_limit = int(os.environ.get("DEBUG_JSON_LIMIT", "2"))
-
-def first_str(d, keys, default=""):
+def first_str(d, keys, default=''):
     for k in keys:
-        if k in d and d[k] not in (None, ""):
+        if k in d and d[k] not in (None, ''):
             return str(d[k])
     return default
 
 def first_num(d, keys, default=0.0):
     for k in keys:
-        if k in d and d[k] not in (None, ""):
+        if k in d and d[k] not in (None, ''):
             try:
                 return float(d[k])
             except Exception:
                 pass
     return float(default)
 
-text = open(json_path, "r", encoding="utf-8", errors="replace").read().strip()
+text = open(json_path, 'r', encoding='utf-8', errors='replace').read().strip()
 if not text:
     sys.exit(0)
-
 try:
     data = json.loads(text)
 except Exception:
     sys.exit(0)
-
 if isinstance(data, dict):
     offers = None
-    for key in ("offers", "rows", "results"):
+    for key in ('offers', 'rows', 'results'):
         if isinstance(data.get(key), list):
             offers = data[key]
             break
@@ -469,49 +355,37 @@ else:
     offers = []
 
 if debug_json:
-    print(f"#DEBUG offers_total={len(offers)}", file=sys.stderr)
+    print(f'#DEBUG offers_total={len(offers)}', file=sys.stderr)
     for idx, offer in enumerate(offers[:debug_limit]):
         if isinstance(offer, dict):
             print(f"#DEBUG offer[{idx}] keys={','.join(sorted(offer.keys()))}", file=sys.stderr)
-            print(
-                "#DEBUG offer[{idx}] dl_location={loc}".format(
-                    idx=idx,
-                    loc=offer.get("dl_location", "")
-                ),
-                file=sys.stderr
-            )
+            print(f"#DEBUG offer[{idx}] dl_location={offer.get('dl_location', '')}", file=sys.stderr)
 
 rows = []
 for o in offers[:search_limit]:
     if not isinstance(o, dict):
         continue
+    oid = first_str(o, ['id', 'offer_id'])
+    model = first_str(o, ['gpu_name', 'gpu', 'model'], 'unknown').replace('_', ' ')
+    num_gpus = first_num(o, ['num_gpus'], 1.0)
+    price = first_num(o, ['dph_total', 'dph', 'price', 'hourly_price'], 0.0)
+    dlperf = first_num(o, ['dlperf', 'dl_performance', 'dlp'], 0.0)
+    dlperf_usd = first_num(o, ['dlperf_usd', 'dlperf_per_dphtotal', 'flops_per_dphtotal', 'score'], 0.0)
+    rel = first_num(o, ['reliability', 'reliability2', 'rel', 'r'], 1.0)
+    vram = first_num(o, ['gpu_ram', 'gpu_total_ram', 'vram'], 0.0)
+    inet_down = first_num(o, ['inet_down'], 0.0)
+    inet_down_cost = first_num(o, ['inet_down_cost'], 0.0)
+    storage_cost = first_num(o, ['storage_cost'], 0.0)
+    disk_space = first_num(o, ['disk_space'], 0.0)
+    direct_ports = first_num(o, ['direct_port_count'], 0.0)
+    verified = first_str(o, ['verification', 'verified'], 'True')
 
-    oid = first_str(o, ["id", "offer_id"])
-    model = first_str(o, ["gpu_name", "gpu", "model"], "unknown").replace("_", " ")
-    num_gpus = first_num(o, ["num_gpus"], 1.0)
-
-    price = first_num(o, ["dph_total", "dph", "price", "hourly_price"], 0.0)
-    dlperf = first_num(o, ["dlperf", "dl_performance", "dlp"], 0.0)
-    dlperf_usd = first_num(o, ["dlperf_usd", "dlperf_per_dphtotal", "flops_per_dphtotal", "score"], 0.0)
-    rel = first_num(o, ["reliability", "reliability2", "rel", "r"], 1.0)
-    vram = first_num(o, ["gpu_ram", "gpu_total_ram", "vram"], 0.0)
-    inet_down = first_num(o, ["inet_down"], 0.0)
-    inet_down_cost = first_num(o, ["inet_down_cost"], 0.0)
-    storage_cost = first_num(o, ["storage_cost"], 0.0)
-    disk_space = first_num(o, ["disk_space"], 0.0)
-    direct_ports = first_num(o, ["direct_port_count"], 0.0)
-    verified = first_str(o, ["verification", "verified"], "True")
-
-    # --- CHINA-FILTER: Nur nicht-chinesische Angebote ---
-    # lege in der Reihenfolge Schlüssel an, falls Vast neue Feldnamen nutzt
-    loc_country = first_str(o, ["location_country", "dl_location", "location"], "").upper().strip()
-    if loc_country.startswith("C") and (any(x in loc_country for x in ["CN", "HINA", "CHINA"])):
-        continue  # CHINA ausschliessen
-    # --- Ende CHINA-FILTER ---
+    loc_country = first_str(o, ['location_country', 'dl_location', 'location'], '').upper().strip()
+    if loc_country and any(x in loc_country for x in ['CN', 'HINA', 'CHINA']):
+        continue
 
     if vram > 200:
         vram = vram / 1024.0
-
     if vram < min_vram_gb:
         continue
     if rel < min_rel:
@@ -521,68 +395,49 @@ for o in offers[:search_limit]:
     monthly_model_storage = model_gb * storage_cost
     eff_hour = price + (initial_load_cost / max(session_hours, 0.1))
 
-    # --- VERFEINERTE READY-ZEIT-SCHAETZUNG MIT DEINER 7-MINUTEN-ERFAHRUNG ---
     effective_mbps = max(inet_down * download_efficiency, 0.001)
     model_megabits = model_gb * 1024.0 * 8.0
     est_model_dl_min = model_megabits / effective_mbps / 60.0
 
-    # empirische Referenzwerte (du: 7 Minuten bei 1370 Mb/s)
     actual_dl_mbps_used = max(inet_down, 1.0)
     speed_overhead_scale = max(ref_dl_mbps / actual_dl_mbps_used, 1.0)
     additional_overhead_min = (ref_total_overhead_min - base_boot_overhead_min) * speed_overhead_scale
     final_boot_overhead = base_boot_overhead_min + additional_overhead_min
-
     est_ready_min = est_model_dl_min + final_boot_overhead
-    # --- ENDE: VERFEINERTE READY-ZEIT ---
-
-    est_model_dl_min_rounded = int(round(est_model_dl_min))
-    est_ready_min_rounded = int(round(est_ready_min))
 
     rows.append({
-        "oid": oid,
-        "model": model,
-        "num_gpus": num_gpus,
-        "price": price,
-        "init_load_cost": initial_load_cost,
-        "eff_hour": eff_hour,
-        "monthly_storage": monthly_model_storage,
-        "dlperf": dlperf,
-        "dlperf_usd": dlperf_usd,
-        "rel": rel,
-        "vram": vram,
-        "inet_down": inet_down,
-        "inet_down_cost": inet_down_cost,
-        "disk_space": disk_space,
-        "direct_ports": direct_ports,
-        "verified": verified,
-        "est_model_dl_min": est_model_dl_min,
-        "est_ready_min": est_ready_min,
-        "est_model_dl_min_rounded": est_model_dl_min_rounded,
-        "est_ready_min_rounded": est_ready_min_rounded,
+        'oid': oid, 'model': model, 'num_gpus': num_gpus, 'price': price,
+        'init_load_cost': initial_load_cost, 'eff_hour': eff_hour,
+        'monthly_storage': monthly_model_storage, 'dlperf': dlperf,
+        'dlperf_usd': dlperf_usd, 'rel': rel, 'vram': vram,
+        'inet_down': inet_down, 'disk_space': disk_space,
+        'direct_ports': direct_ports, 'verified': verified,
+        'est_model_dl_min': est_model_dl_min, 'est_ready_min': est_ready_min,
+        'est_model_dl_min_rounded': int(round(est_model_dl_min)),
+        'est_ready_min_rounded': int(round(est_ready_min)),
     })
 
 for r in rows:
-    print("\t".join([
-        str(r["oid"]),
-        str(r["model"]),
-        str(r["num_gpus"]),
-        f'{r["price"]:.6f}',
-        f'{r["init_load_cost"]:.6f}',
-        f'{r["eff_hour"]:.6f}',
-        f'{r["monthly_storage"]:.6f}',
-        f'{r["dlperf"]:.6f}',
-        f'{r["dlperf_usd"]:.6f}',
-        f'{r["rel"]:.6f}',
-        f'{r["vram"]:.6f}',
-        f'{r["inet_down"]:.6f}',
-        f'{r["inet_down_cost"]:.6f}',
-        f'{r["disk_space"]:.6f}',
-        f'{r["direct_ports"]:.6f}',
-        f'{r["est_model_dl_min"]:.6f}',
-        f'{r["est_ready_min"]:.6f}',
-        str(r["est_model_dl_min_rounded"]),
-        str(r["est_ready_min_rounded"]),
-        str(r["verified"]),
+    print('	'.join([
+        str(r['oid']),
+        str(r['model']),
+        str(int(round(r['num_gpus']))),
+        f"{r['price']:.6f}",
+        f"{r['init_load_cost']:.6f}",
+        f"{r['eff_hour']:.6f}",
+        f"{r['monthly_storage']:.6f}",
+        f"{r['dlperf']:.6f}",
+        f"{r['dlperf_usd']:.6f}",
+        f"{r['rel']:.6f}",
+        f"{r['vram']:.6f}",
+        f"{r['inet_down']:.6f}",
+        f"{r['disk_space']:.6f}",
+        f"{r['direct_ports']:.6f}",
+        f"{r['est_model_dl_min']:.6f}",
+        f"{r['est_ready_min']:.6f}",
+        str(r['est_model_dl_min_rounded']),
+        str(r['est_ready_min_rounded']),
+        str(r['verified']),
     ]))
 PY
   )"
@@ -596,7 +451,8 @@ PY
   fi
 
   local -a rows
-  mapfile -t rows < <(printf '%s\n' "$parsed")
+  mapfile -t rows < <(printf '%s
+' "$parsed")
 
   echo "Legende:"
   echo "  Grün  = bester GenAI-Score"
@@ -606,16 +462,16 @@ PY
 
   local -a scored_rows=()
   local i
-  local oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score line
-
   for ((i=0; i<${#rows[@]}; i++)); do
-    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
+    local oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score
+    IFS=$'	' read -r oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
-    scored_rows+=("${score}$'\t'${rows[$i]}")
+    scored_rows+=("${score}"$'	'"${rows[$i]}")
   done
 
   mapfile -t rows < <(
-    printf '%s\n' "${scored_rows[@]}" | sort -t $'\t' -k1,1gr | cut -f2- | head -n "$RESULTS"
+    printf '%s
+' "${scored_rows[@]}" | sort -t $'	' -k1,1gr | cut -f2- | head -n "$RESULTS"
   )
 
   local limit=${#rows[@]}
@@ -625,28 +481,28 @@ PY
   fi
 
   local best_idx=0
-
-  printf '%-3s %-10s %-16s %4s %7s %8s %8s %7s %7s %7s %8s %6s\n' \
-    "Nr" "Offer_ID" "Model" "GPUx" "$/hr" "20GBTx" "Eff$/h" "DLMb/s" "20GBm" "Readym" "VRAMGB" "Score"
-  printf '%s\n' "----------------------------------------------------------------------------------------------------------"
+  printf '%-3s %-10s %-18s %4s %7s %7s %8s %8s %7s %7s %8s %8s %s
+'     "Nr" "Offer_ID" "Model" "GPUx" "\$/hr" "Init$" "Eff$/h" "DLMB/s" "DL20m" "Readym" "VRAM" "Score" "Ver"
+  printf '%s
+' "----------------------------------------------------------------------------------------------------------------"
 
   for ((i=0; i<limit; i++)); do
-    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
+    local oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score line
+    IFS=$'	' read -r oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
-
-    line=$(printf '%-3s %-10s %-16s %4.0f %7.2f %8.2f %8.2f %7.0f %7s %7s %8.1f %6.2f' \
-      "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min_r" "$est_ready_min_r" "$vram" "$score")
-
+    line=$(printf '%-3s %-10s %-18s %4.0f %7.2f %7.2f %8.2f %8.0f %7.0f %7.0f %8.1f %8.2f %s'       "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min_r" "$est_ready_min_r" "$vram" "$score" "$verified")
     case "$i" in
       0) green "$line" ;;
       1|2) yellow "$line" ;;
       3|4) blue "$line" ;;
       *) printf '%s' "$line" ;;
     esac
-    printf '\n'
+    printf '
+'
   done
 
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$best_idx]}"
+  local oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified
+  IFS=$'	' read -r oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$best_idx]}"
 
   echo
   echo "Vorschlag: Nummer $((best_idx+1)) ($oid / $model)"
@@ -677,7 +533,7 @@ PY
     fi
   done
 
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$((choice-1))]}"
+  IFS=$'	' read -r oid model numg price tx eff month dl dlu rel vram inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$((choice-1))]}"
 
   echo
   echo "Gewählt: $choice -> $oid / $model"
@@ -712,15 +568,12 @@ PY
 
   local book_out book_rc
   book_out="$(mktemp)"
-
   echo "[INFO] Fuehre Buchung aus..."
   set +e
   vast_cmd create instance "$oid" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" >"$book_out" 2>&1
   book_rc=$?
   set -e
-
   cat "$book_out"
-
   if [[ $book_rc -ne 0 ]]; then
     echo "[ERR] Buchung fehlgeschlagen (RC=$book_rc)." >&2
     rm -f "$book_out"
@@ -729,31 +582,26 @@ PY
 
   local instance_id=""
   instance_id="$(python3 - "$book_out" <<'PY'
-import json
-import re
-import sys
-
+import json, re, sys
 p = sys.argv[1]
-txt = open(p, "r", encoding="utf-8", errors="replace").read().strip()
-
+txt = open(p, 'r', encoding='utf-8', errors='replace').read().strip()
 try:
     data = json.loads(txt)
     if isinstance(data, dict):
-        for k in ("new_contract", "instance_id", "id"):
-            if k in data and data[k] not in (None, ""):
+        for k in ('new_contract', 'instance_id', 'id'):
+            if k in data and data[k] not in (None, ''):
                 print(str(data[k]))
                 raise SystemExit(0)
     elif isinstance(data, list) and data:
         first = data[0]
         if isinstance(first, dict):
-            for k in ("new_contract", "instance_id", "id"):
-                if k in first and first[k] not in (None, ""):
+            for k in ('new_contract', 'instance_id', 'id'):
+                if k in first and first[k] not in (None, ''):
                     print(str(first[k]))
                     raise SystemExit(0)
 except Exception:
     pass
-
-m = re.search(r'\b([0-9]{4,})\b', txt)
+m = re.search(r'([0-9]{4,})', txt)
 if m:
     print(m.group(1))
 PY
