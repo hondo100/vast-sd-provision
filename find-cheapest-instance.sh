@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-25.08"
+VERSION="2026-05-25.11"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -93,7 +93,7 @@ WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
     - template_hash liefert die Basiskonfiguration
     - disk sollte explizit gesetzt werden
 11) Nach jedem groesseren Edit:
-      bash -n ./find-cheapest-instance.sh
+     bash -n ./find-cheapest-instance.sh
 SCRIPT_OVERVIEW
 
 usage() {
@@ -116,15 +116,8 @@ blue()   { c 34 "$1"; }
 red()    { c 31 "$1"; }
 
 have_vast() { command -v vastai >/dev/null 2>&1 || command -v vast >/dev/null 2>&1; }
-
-vast_bin() {
-  if command -v vastai >/dev/null 2>&1; then echo "vastai"; else echo "vast"; fi
-}
-
-vast_cmd() {
-  if command -v vastai >/dev/null 2>&1; then vastai "$@"; else vast "$@"; fi
-}
-
+vast_bin() { if command -v vastai >/dev/null 2>&1; then echo "vastai"; else echo "vast"; fi; }
+vast_cmd() { if command -v vastai >/dev/null 2>&1; then vastai "$@"; else vast "$@"; fi; }
 fmt2() { printf '%.2f' "${1:-0}"; }
 
 score_offer() {
@@ -186,7 +179,6 @@ diag_raw() {
   echo
   echo "[DIAG] stderr preview:"
   head -c 1200 "$err_file" || true
-  echo
   echo
   if [[ "$out_bytes" -eq 0 ]]; then
     echo "[ERR] stdout ist leer. Problem liegt vor dem Parser."
@@ -331,43 +323,33 @@ def first_str(d, keys, default=''):
 def first_num(d, keys, default=0.0):
     for k in keys:
         if k in d and d[k] not in (None, ''):
-            try:
-                return float(d[k])
-            except Exception:
-                pass
+            try: return float(d[k])
+            except Exception: pass
     return float(default)
 
 def country_code(val):
     s = str(val or '').strip()
-    if not s or s in {'--', 'unknown'}:
-        return 'unknown'
+    if not s or s in {'--', 'unknown'}: return 'unknown'
     u = s.upper()
-    if u in {'CN', 'DE', 'ES', 'BE', 'CZ', 'PL', 'US', 'NL', 'FR', 'IT', 'GB', 'UK', 'CA', 'SE', 'FI', 'AT', 'CH', 'PT', 'IE', 'DK', 'NO', 'RO'}:
-        return u
+    if u in {'CN', 'DE', 'ES', 'BE', 'CZ', 'PL', 'US', 'NL', 'FR', 'IT', 'GB', 'UK', 'CA', 'SE', 'FI', 'AT', 'CH', 'PT', 'IE', 'DK', 'NO', 'RO'}: return u
     m = re.search(r'\b([A-Z]{2})\b', u)
-    if m:
-        return m.group(1)
+    if m: return m.group(1)
     return s
 
 text = open(json_path, 'r', encoding='utf-8', errors='replace').read().strip()
-if not text:
-    sys.exit(0)
-try:
-    data = json.loads(text)
-except Exception:
-    sys.exit(0)
+if not text: sys.exit(0)
+try: data = json.loads(text)
+except Exception: sys.exit(0)
+
 if isinstance(data, dict):
     offers = None
     for key in ('offers', 'rows', 'results'):
         if isinstance(data.get(key), list):
             offers = data[key]
             break
-    if offers is None:
-        offers = [data]
-elif isinstance(data, list):
-    offers = data
-else:
-    offers = []
+    if offers is None: offers = [data]
+elif isinstance(data, list): offers = data
+else: offers = []
 
 if debug_json:
     print(f'#DEBUG offers_total={len(offers)}', file=sys.stderr)
@@ -378,10 +360,9 @@ if debug_json:
 
 rows = []
 for o in offers[:search_limit]:
-    if not isinstance(o, dict):
-        continue
+    if not isinstance(o, dict): continue
     oid = first_str(o, ['id', 'offer_id'])
-    model = first_str(o, ['gpu_name', 'gpu', 'model'], 'unknown').replace('_', ' ')
+    model = first_str(o, ['gpu_name', 'gpu', 'model'], 'unknown').replace('_', ' ')[:14]
     num_gpus = first_num(o, ['num_gpus'], 1.0)
     price = first_num(o, ['dph_total', 'dph', 'price', 'hourly_price'], 0.0)
     dlperf = first_num(o, ['dlperf', 'dl_performance', 'dlp'], 0.0)
@@ -396,15 +377,11 @@ for o in offers[:search_limit]:
     verified = first_str(o, ['verification', 'verified'], 'True')
 
     loc_country = first_str(o, ['location_country', 'country', 'dl_location', 'location'], '').upper().strip()
-    if loc_country and any(x in loc_country for x in ['CN', 'HINA', 'CHINA']):
-        continue
+    if loc_country and any(x in loc_country for x in ['CN', 'HINA', 'CHINA']): continue
 
-    if vram > 200:
-        vram = vram / 1024.0
-    if vram < min_vram_gb:
-        continue
-    if rel < min_rel:
-        continue
+    if vram > 200: vram = vram / 1024.0
+    if vram < min_vram_gb: continue
+    if rel < min_rel: continue
 
     initial_load_cost = model_gb * inet_down_cost
     monthly_model_storage = model_gb * storage_cost
@@ -435,25 +412,12 @@ for o in offers[:search_limit]:
 
 for r in rows:
     print('\t'.join([
-        str(r['oid']),
-        str(r['model']),
-        str(int(round(r['num_gpus']))),
-        f"{r['price']:.6f}",
-        f"{r['init_load_cost']:.6f}",
-        f"{r['eff_hour']:.6f}",
-        f"{r['monthly_storage']:.6f}",
-        f"{r['dlperf']:.6f}",
-        f"{r['dlperf_usd']:.6f}",
-        f"{r['rel']:.6f}",
-        f"{r['vram']:.6f}",
-        str(r['country']),
-        f"{r['inet_down']:.6f}",
-        f"{r['disk_space']:.6f}",
-        f"{r['direct_ports']:.6f}",
-        f"{r['est_model_dl_min']:.6f}",
-        f"{r['est_ready_min']:.6f}",
-        str(r['est_model_dl_min_rounded']),
-        str(r['est_ready_min_rounded']),
+        str(r['oid']), str(r['model']), str(int(round(r['num_gpus']))),
+        f"{r['price']:.6f}", f"{r['init_load_cost']:.6f}", f"{r['eff_hour']:.6f}",
+        f"{r['monthly_storage']:.6f}", f"{r['dlperf']:.6f}", f"{r['dlperf_usd']:.6f}",
+        f"{r['rel']:.6f}", f"{r['vram']:.6f}", str(r['country']), f"{r['inet_down']:.6f}",
+        f"{r['disk_space']:.6f}", f"{r['direct_ports']:.6f}", f"{r['est_model_dl_min']:.6f}",
+        f"{r['est_ready_min']:.6f}", str(r['est_model_dl_min_rounded']), str(r['est_ready_min_rounded']),
         str(r['verified']),
     ]))
 PY
@@ -528,7 +492,7 @@ PY
   echo "  - Geschaetzte 20GB-Downloadzeit: ${est_dl_min_r} min"
   echo "  - Geschaetzte Bereitstellung (inkl. Overhead): ${est_ready_min_r} min"
   echo "  - Monatliche Storage-Kosten fuer 20GB: $(fmt2 "$month") $/Monat"
-  echo "  - DLPerf: $(fmt2 "$dl"), DLPerf/$: $(fmt2 "$dlu"), VRAM: $(fmt2 "$vram") GB, Country: ${country}, Ports: $(fmt2 "$ports")"
+  echo "  - DLPerf: $(fmt2 "$dl"), DLPerf/\$: $(fmt2 "$dlu"), VRAM: $(fmt2 "$vram") GB, Country: ${country}, Ports: $(fmt2 "$ports")"
   echo "  - Hinweis: In der Auswahl kann mit q das Skript beendet werden."
   echo
 
@@ -618,14 +582,11 @@ try:
                 if k in first and first[k] not in (None, ''):
                     print(str(first[k]))
                     raise SystemExit(0)
-except Exception:
-    pass
+except Exception: pass
 m = re.search(r'\b([0-9]{4,})\b', txt)
-if m:
-    print(m.group(1))
+if m: print(m.group(1))
 PY
   )"
-
   rm -f "$book_out"
 
   echo
