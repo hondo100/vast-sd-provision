@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-25.13"
+VERSION="2026-05-25.14"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
 # ============================================================================ #
 
 RESULTS=10
-SEARCH_LIMIT=60
+SEARCH_LIMIT=120 # Erhöht, da durch den GPU-Filter mehr Rohdaten gesichtet werden müssen
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 SORT='dlperf_usd-'
+
+# Standard-Filter für die Leistungsklasse 3090/4090 und semiprofessionelle/professionelle Äquivalente
+GPU_FILTER='RTX (3090|4090|A5000|A6000|5000|6000)'
 
 MODEL_GB=20
 SESSION_HOURS=3
@@ -93,7 +96,11 @@ WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
     - Die API liefert kein flaches Feld 'location_country'. Die Information
       befindet sich im Feld 'geolocation' (z.B. "Frankfurt, DE"). Das Skript
       extrahiert das ISO-Kürzel am Ende dieses Strings via Regex.
-12) Nach jedem groesseren Edit:
+12) GPU-MODELL-FILTER:
+    - Über `GPU_FILTER` bzw. `--gpu-filter` wird ein regulärer Ausdruck an den
+      Python-Parser übergeben, der den Feldwert `gpu_name` filtert (z.B. restriktiv
+      nur 3090er oder 4090er Klassen zulässt).
+13) Nach jedem groesseren Edit:
      bash -n ./find-cheapest-instance.sh
 SCRIPT_OVERVIEW
 
@@ -101,7 +108,7 @@ usage() {
   cat <<EOF
 Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N]
           [--model-gb N] [--session-hours N] [--results N] [--search-limit N]
-          [--book] [--template-hash HASH] [--disk N]
+          [--book] [--template-hash HASH] [--disk N] [--gpu-filter REGEX]
 EOF
 }
 
@@ -159,11 +166,6 @@ diag_raw() {
   rc=$?
   set -e
   out_bytes="$(wc -c <"$out_file" | tr -d ' ')"
-  err_bytes="$(wc -c <"$err_file" | tr -d ' ')"
-  echo "[DIAG] RC=$rc"
-  echo "[DIAG] stdout bytes: $out_bytes"
-  echo "[DIAG] stderr bytes: $err_bytes"
-  echo
   if [[ "$out_bytes" -eq 0 ]]; then
     echo "[ERR] stdout ist leer."
     rm -f "$out_file" "$err_file"
@@ -188,6 +190,7 @@ main() {
       --book) DO_BOOK=1 ;;
       --template-hash) shift; TEMPLATE_HASH="${1:?Fehlender Wert fuer --template-hash}" ;;
       --disk) shift; DISK_GB="${1:?Fehlender Wert fuer --disk}" ;;
+      --gpu-filter) shift; GPU_FILTER="${1:?Fehlender Wert fuer --gpu-filter}" ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
     esac
@@ -200,6 +203,8 @@ main() {
   fi
 
   echo "Skript-Version: $VERSION"
+  echo "[INFO] Aktiver GPU-Modellfilter (Regex): $GPU_FILTER"
+  
   if [[ $diag -eq 1 ]]; then
     diag_raw
     exit $?
@@ -231,7 +236,7 @@ main() {
   local parsed
   parsed="$(
     DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" \
-    python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BASE_BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" "$REF_DL_MBPS" "$REF_TOTAL_OVERHEAD_MIN" <<'PY'
+    python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BASE_BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" "$REF_DL_MBPS" "$REF_TOTAL_OVERHEAD_MIN" "$GPU_FILTER" <<'PY'
 import json, os, re, sys
 json_path = sys.argv[1]
 search_limit = int(sys.argv[2])
@@ -243,6 +248,7 @@ base_boot_overhead_min = float(sys.argv[7])
 download_efficiency = float(sys.argv[8])
 ref_dl_mbps = float(sys.argv[9])
 ref_total_overhead_min = float(sys.argv[10])
+gpu_filter_regex = sys.argv[11]
 
 def first_str(d, keys, default=''):
     for k in keys:
@@ -260,11 +266,9 @@ def extract_country(o):
     geo = str(o.get('geolocation', o.get('location', ''))).strip()
     if not geo or geo.lower() in ('none', 'unknown', 'null'):
         return 'US'
-    
     u = geo.upper()
     m = re.search(r'\b([A-Z]{2})\b\s*$', u)
     if m: return m.group(1)
-    
     countries = {'USA': 'US', 'GERMANY': 'DE', 'SPAIN': 'ES', 'FRANCE': 'FR', 'CANADA': 'CA', 'NETHERLANDS': 'NL'}
     for name, code in countries.items():
         if name in u: return code
@@ -283,8 +287,14 @@ else: offers = []
 rows = []
 for o in offers[:search_limit]:
     if not isinstance(o, dict): continue
+    
+    # 1. GPU-Modellprüfung gegen den konfigurierten Regex-Filter
+    gpu_name_raw = first_str(o, ['gpu_name', 'gpu', 'model'], 'unknown')
+    if not re.search(gpu_filter_regex, gpu_name_raw, re.IGNORECASE):
+        continue
+
     oid = first_str(o, ['id', 'offer_id'])
-    model = first_str(o, ['gpu_name', 'gpu', 'model'], 'unknown').replace('_', ' ')[:14]
+    model = gpu_name_raw.replace('_', ' ')[:14]
     num_gpus = first_num(o, ['num_gpus'], 1.0)
     price = first_num(o, ['dph_total', 'dph', 'price', 'hourly_price'], 0.0)
     dlperf = first_num(o, ['dlperf', 'dl_performance', 'dlp'], 0.0)
@@ -346,7 +356,7 @@ PY
   rm -f "$out_file"
 
   if [[ -z "$parsed" ]]; then
-    echo "[ERR] Keine geeigneten Angebote nach lokalem Filter vorhanden." >&2
+    echo "[ERR] Keine geeigneten Angebote nach GPU- und Standort-Filterung vorhanden." >&2
     exit 1
   fi
 
