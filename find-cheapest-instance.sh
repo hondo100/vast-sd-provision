@@ -3,14 +3,15 @@ set -euo pipefail
 
 VERSION="2026-05-24.31"
 
-# ============================================================================
+# ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
-# ============================================================================
+# ============================================================================ #
 
 # Such- und Auswahlparameter
 RESULTS=10
 SEARCH_LIMIT=60
-QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
+# zusätzlicher Filter: keine chinesischen Angebote (serverseitig, falls Vast unterstützt)
+QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 location_country!=CN'
 SORT='dlperf_usd-'
 
 # Modell- und Wirtschaftlichkeitsannahmen
@@ -20,9 +21,11 @@ MIN_VRAM_GB=24.0
 MIN_REL=0.95
 MIN_DISK_GB=40
 
-# Download-/Bereitstellungsmodell
-BOOT_OVERHEAD_MIN=4.0
+# Download- und Ready-Zeit-Modell
 DOWNLOAD_EFFICIENCY=0.75
+BASE_BOOT_OVERHEAD_MIN=1.0           # theoretischer Minimal-Overhead (Boot/Launcher)
+REF_DL_MBPS=1370.0                    # empirische Netto-Bandbreite, bei der du 7 Minuten gesehen hast
+REF_TOTAL_OVERHEAD_MIN=7.0            # gemessene 7 Minuten Init-Overhead bei REF_DL_MBPS
 
 # Buchungsdefaults
 DO_BOOK=0
@@ -42,8 +45,60 @@ ZWECK
 ========================================================================
 - Dieses Skript sucht wirtschaftliche Vast-Angebote fuer ca. 20GB-Modelle.
 - Es kann nach Benutzerauswahl OPTIONAL direkt buchen.
-- Es bewertet zusaetzlich die geschaetzte Downloadzeit fuer 20GB
+- Es bewertet die geschaetzte Downloadzeit fuer 20GB
   sowie die geschaetzte Gesamt-Bereitstellungszeit.
+
+- Es filtert chinesische Angebote:
+   - serverseitig: location_country!=CN in QUERY
+   - clientseitig: Python-Filter auf location_country/dl_location
+
+- Es verfeinert die Bereitstellungszeit-Schaetzung:
+   - Nutzung des beobachteten Overheads (ca. 7 Minuten bei 1370 Mb/s).
+   - Berechnung eines netzwerkhaengigen "Initial Overhead",
+     der bei schnellen Verbindungen ansteigt.
+
+========================================================================
+ENTDECKUNGEN / FINDINGS / LOGIK
+========================================================================
+1) EMPIRISCHE BEWERTUNG:
+   - Bei 1370 Mb/s habe ich beobachtet:
+     - 20GB-Download selbst dauert kurz,
+     - aber die Gesamt-Bereitstellung (inkl. Setup, Datei-/Model-I/O) ca. 7 Minuten.
+   - Also: Hohe Netzgeschwindigkeit => additiver Initial-Overhead von 7 Minuten
+          ueber die reine Downloadzeit.
+
+2) MODELL:
+   - Wir trennen:
+        - Download-Zeit (nur Netzwerk)
+        - zusätzlicher Overhead, der von der Netzgeschwindigkeit abhaengt.
+   - Fuer sehr langsame Verbindungen dominiert Download-Zeit.
+   - Fuer schnelle Verbindungen (z. B. 1370 Mb/s) bleibt der Overhead stabil bei 7 Minuten.
+
+3) FORMEL:
+   - Baseline:
+        base_boot_overhead_min = 1.0 (reiner Boot-/Launcher-Overhead)
+   - Referenz:
+        ref_dl_mbps = 1370.0 (deine gemessene Netto-Geschwindigkeit)
+        ref_total_overhead_min = 7.0 (gemessene 7 Minuten)
+
+   - scale = max(1370 / inet_down, 1.0)  -> 1.0 bei 1370, >1.0 bei langsamen Verbindungen
+   - additional_overhead = (7.0 - 1.0) * scale  -> 0 bei 1370, größer bei langsamen Verbindungen
+   - est_ready_min = est_model_dl_min + base_boot_overhead_min + additional_overhead
+
+4) CHINA-FILTER:
+   - Serverseitig: location_country!=CN in QUERY.
+   - Clientseitig: Python prueft location_country/dl_location auf "CN"/"China".
+     Alle Angebote mit chinesischem Ursprung werden aus der Liste entfernt.
+
+5) Bewertung:
+   - Score basiert auf:
+        - Kosteneffizienz pro Stunde incl. erstmaliger Download-Kosten,
+        - dlperf, dlperf_usd, Reliability, VRAM, Downloadrate, Ports, etc.
+
+6) NUTZUNG:
+   - Script mit --book ausfuehren, um automatische Buchung zu aktivieren.
+   - Mit --dry-run nur Auswahl ohne Buchung.
+   - Info/Ausgabe zeigt Download- und Ready-Zeiten inkl. geschätztem Overhead an.
 
 ========================================================================
 WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
@@ -58,7 +113,7 @@ WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
 7) Die angezeigte Bereitstellungszeit ist eine SCHAETZUNG:
    - aus inet_down (Mb/s),
    - multipliziert mit einem Effizienzfaktor,
-   - plus fixem Boot-/Init-Overhead.
+   - plus einem netzwerkhaengigen Initial-Overhead (7 Minuten bei 1370 Mb/s).
 8) `reliability` wird weiter intern im Score verwendet, aber nicht
    mehr in der Tabelle angezeigt.
 9) Template-Buchung bedeutet:
@@ -282,7 +337,8 @@ main() {
   echo "[INFO] Tabellensortierung lokal: Score absteigend"
   echo "[INFO] Modellgroesse fuer initiale Beladung: ${MODEL_GB} GB"
   echo "[INFO] Angenommene Sitzungsdauer: ${SESSION_HOURS} h"
-  echo "[INFO] Boot-Overhead-Schaetzung: ${BOOT_OVERHEAD_MIN} min"
+  echo "[INFO] Baseline-Boot-Overhead (Theorie): ${BASE_BOOT_OVERHEAD_MIN} min"
+  echo "[INFO] Empirischer Ref-Overhead bei ${REF_DL_MBPS} Mb/s: ${REF_TOTAL_OVERHEAD_MIN} min"
   echo "[INFO] Download-Effizienzfaktor: ${DOWNLOAD_EFFICIENCY}"
   echo "[INFO] Anzahl Rohangebote von Vast: ${SEARCH_LIMIT}"
   echo "[INFO] Anzahl final angezeigter Angebote: ${RESULTS}"
@@ -354,7 +410,7 @@ main() {
   local parsed
   parsed="$(
     DEBUG_JSON="$DEBUG_JSON" DEBUG_JSON_LIMIT="$DEBUG_JSON_LIMIT" \
-    python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" <<'PY'
+    python3 - "$out_file" "$SEARCH_LIMIT" "$MODEL_GB" "$SESSION_HOURS" "$MIN_VRAM_GB" "$MIN_REL" "$BASE_BOOT_OVERHEAD_MIN" "$DOWNLOAD_EFFICIENCY" "$REF_DL_MBPS" "$REF_TOTAL_OVERHEAD_MIN" <<'PY'
 import json
 import os
 import sys
@@ -365,11 +421,28 @@ model_gb = float(sys.argv[3])
 session_hours = float(sys.argv[4])
 min_vram_gb = float(sys.argv[5])
 min_rel = float(sys.argv[6])
-boot_overhead_min = float(sys.argv[7])
-download_efficiency = float(sys.argv[8])
+base_boot_overhead_min = float(sys.argv[7])      # 1.0
+download_efficiency = float(sys.argv[8])          # 0.75
+ref_dl_mbps = float(sys.argv[9])                  # 1370.0
+ref_total_overhead_min = float(sys.argv[10])      # 7.0
 
 debug_json = int(os.environ.get("DEBUG_JSON", "0"))
 debug_limit = int(os.environ.get("DEBUG_JSON_LIMIT", "2"))
+
+def first_str(d, keys, default=""):
+    for k in keys:
+        if k in d and d[k] not in (None, ""):
+            return str(d[k])
+    return default
+
+def first_num(d, keys, default=0.0):
+    for k in keys:
+        if k in d and d[k] not in (None, ""):
+            try:
+                return float(d[k])
+            except Exception:
+                pass
+    return float(default)
 
 text = open(json_path, "r", encoding="utf-8", errors="replace").read().strip()
 if not text:
@@ -392,21 +465,6 @@ elif isinstance(data, list):
     offers = data
 else:
     offers = []
-
-def first_num(d, keys, default=0.0):
-    for k in keys:
-        if k in d and d[k] not in (None, ""):
-            try:
-                return float(d[k])
-            except Exception:
-                pass
-    return float(default)
-
-def first_str(d, keys, default=""):
-    for k in keys:
-        if k in d and d[k] not in (None, ""):
-            return str(d[k])
-    return default
 
 if debug_json:
     print(f"#DEBUG offers_total={len(offers)}", file=sys.stderr)
@@ -442,6 +500,12 @@ for o in offers[:search_limit]:
     direct_ports = first_num(o, ["direct_port_count"], 0.0)
     verified = first_str(o, ["verification", "verified"], "True")
 
+    # --- CHINA-FILTER: Nur nicht-chinesische Angebote ---
+    loc_country = first_str(o, ["location_country", "dl_location"], "").upper().strip()
+    if loc_country.startswith("C") and (any(x in loc_country for x in ["CN", "HINA", "CHINA"])):
+        continue  # CHINA ausschliessen
+    # --- Ende CHINA-FILTER ---
+
     if vram > 200:
         vram = vram / 1024.0
 
@@ -454,10 +518,19 @@ for o in offers[:search_limit]:
     monthly_model_storage = model_gb * storage_cost
     eff_hour = price + (initial_load_cost / max(session_hours, 0.1))
 
+    # --- VERFEINERTE READY-ZEIT-SCHAETZUNG MIT DEINER 7-MINUTEN-ERFAHRUNG ---
     effective_mbps = max(inet_down * download_efficiency, 0.001)
     model_megabits = model_gb * 1024.0 * 8.0
     est_model_dl_min = model_megabits / effective_mbps / 60.0
-    est_ready_min = est_model_dl_min + boot_overhead_min
+
+    # empirische Referenzwerte (du: 7 Minuten bei 1370 Mb/s)
+    actual_dl_mbps_used = max(inet_down, 1.0)
+    speed_overhead_scale = max(ref_dl_mbps / actual_dl_mbps_used, 1.0)
+    additional_overhead_min = (ref_total_overhead_min - base_boot_overhead_min) * speed_overhead_scale
+    final_boot_overhead = base_boot_overhead_min + additional_overhead_min
+
+    est_ready_min = est_model_dl_min + final_boot_overhead
+    # --- ENDE: VERFEINERTE READY-ZEIT ---
 
     est_model_dl_min_rounded = int(round(est_model_dl_min))
     est_ready_min_rounded = int(round(est_ready_min))
@@ -535,7 +608,7 @@ PY
   for ((i=0; i<${#rows[@]}; i++)); do
     IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram inet_down inet_cost disk ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
-    scored_rows+=("${score}"$'\t'"${rows[$i]}")
+    scored_rows+=("${score}$'\t'${rows[$i]}")
   done
 
   mapfile -t rows < <(
@@ -551,7 +624,7 @@ PY
   local best_idx=0
 
   printf '%-3s %-10s %-16s %4s %7s %8s %8s %7s %7s %7s %8s %6s\n' \
-    "Nr" "Offer_ID" "Model" "GPUx" "\$/hr" "20GBTx" "Eff\$/h" "DLMb/s" "20GBm" "Readym" "VRAMGB" "Score"
+    "Nr" "Offer_ID" "Model" "GPUx" "$/hr" "20GBTx" "Eff$/h" "DLMb/s" "20GBm" "Readym" "VRAMGB" "Score"
   printf '%s\n' "----------------------------------------------------------------------------------------------------------"
 
   for ((i=0; i<limit; i++)); do
@@ -579,9 +652,9 @@ PY
   echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: $(fmt2 "$eff") $/h"
   echo "  - Downloadrate: $(fmt2 "$inet_down") Mb/s"
   echo "  - Geschaetzte 20GB-Downloadzeit: ${est_dl_min_r} min"
-  echo "  - Geschaetzte Bereitstellung: ${est_ready_min_r} min"
+  echo "  - Geschaetzte Bereitstellung (inkl. Overhead): ${est_ready_min_r} min"
   echo "  - Monatliche Storage-Kosten fuer 20GB: $(fmt2 "$month") $/Monat"
-  echo "  - DLPerf: $(fmt2 "$dl"), DLPerf/\$: $(fmt2 "$dlu"), VRAM: $(fmt2 "$vram") GB, Ports: $(fmt2 "$ports")"
+  echo "  - DLPerf: $(fmt2 "$dl"), DLPerf/$: $(fmt2 "$dlu"), VRAM: $(fmt2 "$vram") GB, Ports: $(fmt2 "$ports")"
   echo
 
   if [[ $dry -eq 1 ]]; then
@@ -606,7 +679,7 @@ PY
   echo
   echo "Gewählt: $choice -> $oid / $model"
   echo "  - Erwartete 20GB-Downloadzeit: ${est_dl_min_r} min"
-  echo "  - Erwartete Gesamt-Bereitstellung: ${est_ready_min_r} min"
+  echo "  - Erwartete Gesamt-Bereitstellung (inkl. Overhead): ${est_ready_min_r} min"
 
   if [[ $DO_BOOK -ne 1 ]]; then
     echo "[HINWEIS] Keine automatische Buchung aktiviert."
