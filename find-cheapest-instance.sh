@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-24.31"
+VERSION="2026-05-25.01"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -10,8 +10,9 @@ VERSION="2026-05-24.31"
 # Such- und Auswahlparameter
 RESULTS=10
 SEARCH_LIMIT=60
-# zusätzlicher Filter: keine chinesischen Angebote (serverseitig, falls Vast unterstützt)
-QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 location_country!=CN'
+# location_country ist KEIN valides Vast-Suchfeld => FILTERN wirft Fehler
+# Deshalb: nur serverseitig die Basis-Filter, China-Filterung im Python-Code
+QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 SORT='dlperf_usd-'
 
 # Modell- und Wirtschaftlichkeitsannahmen
@@ -25,7 +26,7 @@ MIN_DISK_GB=40
 DOWNLOAD_EFFICIENCY=0.75
 BASE_BOOT_OVERHEAD_MIN=1.0           # theoretischer Minimal-Overhead (Boot/Launcher)
 REF_DL_MBPS=1370.0                    # empirische Netto-Bandbreite, bei der du 7 Minuten gesehen hast
-REF_TOTAL_OVERHEAD_MIN=7.0            # gemessene 7 Minuten Init-Overhead bei REF_DL_MBPS
+REF_TOTAL_OVERHEAD_MIN=7.0            # gemessene 7 Minuten Init-Overhead bei 1370 Mb/s
 
 # Buchungsdefaults
 DO_BOOK=0
@@ -49,7 +50,7 @@ ZWECK
   sowie die geschaetzte Gesamt-Bereitstellungszeit.
 
 - Es filtert chinesische Angebote:
-   - serverseitig: location_country!=CN in QUERY
+   - serverseitig: keine location_country-Filterung (wird vom Vast-CLI nicht unterstützt)
    - clientseitig: Python-Filter auf location_country/dl_location
 
 - Es verfeinert die Bereitstellungszeit-Schaetzung:
@@ -86,7 +87,7 @@ ENTDECKUNGEN / FINDINGS / LOGIK
    - est_ready_min = est_model_dl_min + base_boot_overhead_min + additional_overhead
 
 4) CHINA-FILTER:
-   - Serverseitig: location_country!=CN in QUERY.
+   - Serverseitig: QUERY enthält KEIN location_country!=CN (nicht erlaubt).
    - Clientseitig: Python prueft location_country/dl_location auf "CN"/"China".
      Alle Angebote mit chinesischem Ursprung werden aus der Liste entfernt.
 
@@ -104,23 +105,24 @@ ENTDECKUNGEN / FINDINGS / LOGIK
 WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
 ========================================================================
 1) Vast CLI + --raw ist der bevorzugte Suchpfad.
-2) Tabellen-Parsing vermeiden, JSON bevorzugen.
-3) Rohdiagnose vor Parserumbauten.
-4) Grosse JSON-Daten nie per Environment-Variable an Python uebergeben.
-5) Fuer ~20GB-Modelle ist 24GB VRAM eine sinnvolle Mindestschwelle.
-6) Downloadgeschwindigkeit (`inet_down`) ist fuer die tatsaechliche
+2) location_country ist KEIN gültiges Suchfeld: Führt bei CLI-Aufruf zu Fehler.
+3) Tabellen-Parsing vermeiden, JSON bevorzugen.
+4) Rohdiagnose vor Parserumbauten.
+5) Grosse JSON-Daten nie per Environment-Variable an Python uebergeben.
+6) Fuer ~20GB-Modelle ist 24GB VRAM eine sinnvolle Mindestschwelle.
+7) Downloadgeschwindigkeit (`inet_down`) ist fuer die tatsaechliche
    Time-to-Ready relevant und fliesst in Bewertung und Tabelle ein.
-7) Die angezeigte Bereitstellungszeit ist eine SCHAETZUNG:
+8) Die angezeigte Bereitstellungszeit ist eine SCHAETZUNG:
    - aus inet_down (Mb/s),
    - multipliziert mit einem Effizienzfaktor,
    - plus einem netzwerkhaengigen Initial-Overhead (7 Minuten bei 1370 Mb/s).
-8) `reliability` wird weiter intern im Score verwendet, aber nicht
+9) `reliability` wird weiter intern im Score verwendet, aber nicht
    mehr in der Tabelle angezeigt.
-9) Template-Buchung bedeutet:
-   - Offer-ID bleibt Pflicht
-   - template_hash liefert die Basiskonfiguration
-   - disk sollte explizit gesetzt werden
-10) Nach jedem groesseren Edit:
+10) Template-Buchung bedeutet:
+    - Offer-ID bleibt Pflicht
+    - template_hash liefert die Basiskonfiguration
+    - disk sollte explizit gesetzt werden
+11) Nach jedem groesseren Edit:
       bash -n ./find-cheapest-instance.sh
 SCRIPT_OVERVIEW
 
@@ -472,9 +474,9 @@ if debug_json:
         if isinstance(offer, dict):
             print(f"#DEBUG offer[{idx}] keys={','.join(sorted(offer.keys()))}", file=sys.stderr)
             print(
-                "#DEBUG offer[{idx}] json={json}".format(
+                "#DEBUG offer[{idx}] dl_location={loc}".format(
                     idx=idx,
-                    json=json.dumps(offer, ensure_ascii=False)[:4000]
+                    loc=offer.get("dl_location", "")
                 ),
                 file=sys.stderr
             )
@@ -501,7 +503,8 @@ for o in offers[:search_limit]:
     verified = first_str(o, ["verification", "verified"], "True")
 
     # --- CHINA-FILTER: Nur nicht-chinesische Angebote ---
-    loc_country = first_str(o, ["location_country", "dl_location"], "").upper().strip()
+    # lege in der Reihenfolge Schlüssel an, falls Vast neue Feldnamen nutzt
+    loc_country = first_str(o, ["location_country", "dl_location", "location"], "").upper().strip()
     if loc_country.startswith("C") and (any(x in loc_country for x in ["CN", "HINA", "CHINA"])):
         continue  # CHINA ausschliessen
     # --- Ende CHINA-FILTER ---
