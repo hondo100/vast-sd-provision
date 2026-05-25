@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026-05-25.11"
+VERSION="2026-05-25.12"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -61,10 +61,7 @@ ENTDECKUNGEN / FINDINGS / LOGIK
 3) CHINA-FILTER:
    - location_country ist KEIN gueltiges Vast-Suchfeld.
    - Deshalb keine serverseitige China-Filterung.
-   - Clientseitig werden Angebote mit location_country/country/dl_location/location
-     auf CN / China / CHINA gefiltert.
-   - Country wird zusätzlich aus Standorttexten wie "Spain, ES" oder "Czechia, CZ"
-     normalisiert, wenn kein direktes Länderkürzel geliefert wird.
+   - Clientseitig werden Angebote mit geolocation/location auf CN / China gefiltert.
 
 4) TABELLENFORMAT:
    - Jede Zeile wird in exakt dieselbe Spaltenreihenfolge ausgegeben,
@@ -92,7 +89,11 @@ WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
     - Offer-ID bleibt Pflicht
     - template_hash liefert die Basiskonfiguration
     - disk sollte explizit gesetzt werden
-11) Nach jedem groesseren Edit:
+11) GEOLOCATION / LAND:
+    - Die API liefert kein flaches Feld 'location_country'. Die Information
+      befindet sich im Feld 'geolocation' (z.B. "Frankfurt, DE"). Das Skript
+      extrahiert das ISO-Kürzel am Ende dieses Strings via Regex.
+12) Nach jedem groesseren Edit:
      bash -n ./find-cheapest-instance.sh
 SCRIPT_OVERVIEW
 
@@ -129,31 +130,21 @@ if vram < minv or rel < minr:
     print(-1.0)
     raise SystemExit(0)
 cost_score = 1.0 / max(eff, 0.0001)
-if vram < 24:
-    vram_score = 0.0
-elif vram <= 28:
-    vram_score = 0.75
-elif vram <= 32:
-    vram_score = 0.95
-elif vram <= 48:
-    vram_score = 1.10
-elif vram <= 80:
-    vram_score = 1.18
-else:
-    vram_score = 1.22
+if vram < 24: vram_score = 0.0
+elif vram <= 28: vram_score = 0.75
+elif vram <= 32: vram_score = 0.95
+elif vram <= 48: vram_score = 1.10
+elif vram <= 80: vram_score = 1.18
+else: vram_score = 1.22
 rel_score = rel * rel
 dl_score = math.log(max(dl, 1.0))
 dlu_score = math.log(max(dlu, 1.0))
 net_score = math.log(max(dl_mbps, 1.0))
 ready_penalty = 1.0 / max(ready_min, 1.0)
-if numg <= 1:
-    gpu_penalty = 1.00
-elif numg <= 2:
-    gpu_penalty = 0.82
-elif numg <= 4:
-    gpu_penalty = 0.68
-else:
-    gpu_penalty = 0.55
+if numg <= 1: gpu_penalty = 1.00
+elif numg <= 2: gpu_penalty = 0.82
+elif numg <= 4: gpu_penalty = 0.68
+else: gpu_penalty = 0.55
 score = (cost_score * 0.47 + vram_score * 0.16 + rel_score * 0.14 + ready_penalty * 0.12 + dlu_score * 0.05 + dl_score * 0.03 + net_score * 0.03) * gpu_penalty
 print(f"{score:.6f}")
 PY
@@ -173,33 +164,11 @@ diag_raw() {
   echo "[DIAG] stdout bytes: $out_bytes"
   echo "[DIAG] stderr bytes: $err_bytes"
   echo
-  echo "[DIAG] stdout preview:"
-  head -c 1200 "$out_file" || true
-  echo
-  echo
-  echo "[DIAG] stderr preview:"
-  head -c 1200 "$err_file" || true
-  echo
   if [[ "$out_bytes" -eq 0 ]]; then
-    echo "[ERR] stdout ist leer. Problem liegt vor dem Parser."
-    echo "Pruefe Auth mit: $(vast_bin) show user"
-    echo "Pruefe Hilfe mit: $(vast_bin) search offers --help"
+    echo "[ERR] stdout ist leer."
     rm -f "$out_file" "$err_file"
     return 1
   fi
-  if ! python3 - "$out_file" <<'PY'
-import json, sys
-p = sys.argv[1]
-txt = open(p, 'r', encoding='utf-8', errors='replace').read().strip()
-json.loads(txt)
-print('JSON_OK')
-PY
-  then
-    echo "[ERR] stdout enthaelt Daten, aber kein gueltiges JSON."
-    rm -f "$out_file" "$err_file"
-    return 1
-  fi
-  echo "[OK] --raw liefert JSON."
   rm -f "$out_file" "$err_file"
 }
 
@@ -231,26 +200,6 @@ main() {
   fi
 
   echo "Skript-Version: $VERSION"
-  echo "[INFO] Suchquery: $QUERY"
-  echo "[INFO] Sortierung (Vast-Vorfilter): $SORT"
-  echo "[INFO] Tabellensortierung lokal: Score absteigend"
-  echo "[INFO] Modellgroesse fuer initiale Beladung: ${MODEL_GB} GB"
-  echo "[INFO] Angenommene Sitzungsdauer: ${SESSION_HOURS} h"
-  echo "[INFO] Baseline-Boot-Overhead (Theorie): ${BASE_BOOT_OVERHEAD_MIN} min"
-  echo "[INFO] Empirischer Ref-Overhead bei ${REF_DL_MBPS} Mb/s: ${REF_TOTAL_OVERHEAD_MIN} min"
-  echo "[INFO] Download-Effizienzfaktor: ${DOWNLOAD_EFFICIENCY}"
-  echo "[INFO] Anzahl Rohangebote von Vast: ${SEARCH_LIMIT}"
-  echo "[INFO] Anzahl final angezeigter Angebote: ${RESULTS}"
-  echo "[INFO] Mindest-VRAM: ${MIN_VRAM_GB} GB"
-  echo "[INFO] Mindest-Reliability: ${MIN_REL}"
-  echo "[INFO] Mindest-Disk im Query: ${MIN_DISK_GB} GB"
-  echo "[INFO] Template-Hash fuer Buchung: ${TEMPLATE_HASH}"
-  echo "[INFO] Disk fuer Buchung: ${DISK_GB} GB"
-  if [[ $DO_BOOK -eq 1 ]]; then echo "[INFO] Buchungsmodus: AKTIV"; else echo "[INFO] Buchungsmodus: AUS (nur Auswahl)"; fi
-  if [[ $test -eq 1 ]]; then echo "Modus: test"; else echo "Modus: live"; fi
-  if [[ $DEBUG_JSON -eq 1 ]]; then echo "[INFO] Debug-JSON: aktiv (stderr)"; fi
-  echo
-
   if [[ $diag -eq 1 ]]; then
     diag_raw
     exit $?
@@ -258,8 +207,7 @@ main() {
 
   echo "[INFO] Auth-Check..."
   if ! vast_cmd show user >/dev/null 2>&1; then
-    echo "[ERR] vast CLI nicht authentifiziert oder API-Key ungueltig." >&2
-    echo "Bitte pruefen mit: $(vast_bin) show user" >&2
+    echo "[ERR] vast CLI nicht authentifiziert." >&2
     exit 1
   fi
 
@@ -273,26 +221,10 @@ main() {
   rc=$?
   set -e
 
-  if [[ $rc -ne 0 ]]; then
-    echo "[ERR] search offers fehlgeschlagen (RC=$rc)." >&2
-    echo "--- stderr ---" >&2
-    sed -n '1,80p' "$err_file" >&2 || true
+  if [[ $rc -ne 0 || ! -s "$out_file" ]]; then
+    echo "[ERR] search offers fehlgeschlagen." >&2
     rm -f "$out_file" "$err_file"
     exit 1
-  fi
-
-  if [[ ! -s "$out_file" ]]; then
-    echo "[ERR] Keine --raw-Ausgabe auf stdout erhalten." >&2
-    echo "[INFO] stderr-Vorschau:" >&2
-    sed -n '1,80p' "$err_file" >&2 || true
-    echo "Diagnose: $0 --diag" >&2
-    rm -f "$out_file" "$err_file"
-    exit 1
-  fi
-
-  if [[ -s "$err_file" ]]; then
-    echo "[WARN] vast search schrieb nach stderr (Auszug):" >&2
-    sed -n '1,40p' "$err_file" >&2 || true
   fi
   rm -f "$err_file"
 
@@ -311,13 +243,10 @@ base_boot_overhead_min = float(sys.argv[7])
 download_efficiency = float(sys.argv[8])
 ref_dl_mbps = float(sys.argv[9])
 ref_total_overhead_min = float(sys.argv[10])
-debug_json = int(os.environ.get('DEBUG_JSON', '0'))
-debug_limit = int(os.environ.get('DEBUG_JSON_LIMIT', '2'))
 
 def first_str(d, keys, default=''):
     for k in keys:
-        if k in d and d[k] not in (None, ''):
-            return str(d[k])
+        if k in d and d[k] not in (None, ''): return str(d[k])
     return default
 
 def first_num(d, keys, default=0.0):
@@ -327,14 +256,19 @@ def first_num(d, keys, default=0.0):
             except Exception: pass
     return float(default)
 
-def country_code(val):
-    s = str(val or '').strip()
-    if not s or s in {'--', 'unknown'}: return 'unknown'
-    u = s.upper()
-    if u in {'CN', 'DE', 'ES', 'BE', 'CZ', 'PL', 'US', 'NL', 'FR', 'IT', 'GB', 'UK', 'CA', 'SE', 'FI', 'AT', 'CH', 'PT', 'IE', 'DK', 'NO', 'RO'}: return u
-    m = re.search(r'\b([A-Z]{2})\b', u)
+def extract_country(o):
+    geo = str(o.get('geolocation', o.get('location', ''))).strip()
+    if not geo or geo.lower() in ('none', 'unknown', 'null'):
+        return 'US'
+    
+    u = geo.upper()
+    m = re.search(r'\b([A-Z]{2})\b\s*$', u)
     if m: return m.group(1)
-    return s
+    
+    countries = {'USA': 'US', 'GERMANY': 'DE', 'SPAIN': 'ES', 'FRANCE': 'FR', 'CANADA': 'CA', 'NETHERLANDS': 'NL'}
+    for name, code in countries.items():
+        if name in u: return code
+    return geo[:8]
 
 text = open(json_path, 'r', encoding='utf-8', errors='replace').read().strip()
 if not text: sys.exit(0)
@@ -342,21 +276,9 @@ try: data = json.loads(text)
 except Exception: sys.exit(0)
 
 if isinstance(data, dict):
-    offers = None
-    for key in ('offers', 'rows', 'results'):
-        if isinstance(data.get(key), list):
-            offers = data[key]
-            break
-    if offers is None: offers = [data]
+    offers = data.get('offers', data.get('rows', data.get('results', [data])))
 elif isinstance(data, list): offers = data
 else: offers = []
-
-if debug_json:
-    print(f'#DEBUG offers_total={len(offers)}', file=sys.stderr)
-    for idx, offer in enumerate(offers[:debug_limit]):
-        if isinstance(offer, dict):
-            print(f"#DEBUG offer[{idx}] keys={','.join(sorted(offer.keys()))}", file=sys.stderr)
-            print(f"#DEBUG offer[{idx}] dl_location={offer.get('dl_location', '')}", file=sys.stderr)
 
 rows = []
 for o in offers[:search_limit]:
@@ -376,12 +298,11 @@ for o in offers[:search_limit]:
     direct_ports = first_num(o, ['direct_port_count'], 0.0)
     verified = first_str(o, ['verification', 'verified'], 'True')
 
-    loc_country = first_str(o, ['location_country', 'country', 'dl_location', 'location'], '').upper().strip()
-    if loc_country and any(x in loc_country for x in ['CN', 'HINA', 'CHINA']): continue
+    country = extract_country(o)
+    if country in ('CN', 'CHINA'): continue
 
     if vram > 200: vram = vram / 1024.0
-    if vram < min_vram_gb: continue
-    if rel < min_rel: continue
+    if vram < min_vram_gb or rel < min_rel: continue
 
     initial_load_cost = model_gb * inet_down_cost
     monthly_model_storage = model_gb * storage_cost
@@ -403,8 +324,7 @@ for o in offers[:search_limit]:
         'monthly_storage': monthly_model_storage, 'dlperf': dlperf,
         'dlperf_usd': dlperf_usd, 'rel': rel, 'vram': vram,
         'inet_down': inet_down, 'disk_space': disk_space,
-        'direct_ports': direct_ports, 'verified': verified,
-        'country': country_code(first_str(o, ['location_country', 'country', 'dl_location', 'location'], 'unknown')),
+        'direct_ports': direct_ports, 'verified': verified, 'country': country,
         'est_model_dl_min': est_model_dl_min, 'est_ready_min': est_ready_min,
         'est_model_dl_min_rounded': int(round(est_model_dl_min)),
         'est_ready_min_rounded': int(round(est_ready_min)),
@@ -427,18 +347,11 @@ PY
 
   if [[ -z "$parsed" ]]; then
     echo "[ERR] Keine geeigneten Angebote nach lokalem Filter vorhanden." >&2
-    echo "[HINWEIS] SEARCH_LIMIT erhoehen oder Filter lockern." >&2
     exit 1
   fi
 
   local -a rows
   mapfile -t rows < <(printf '%s\n' "$parsed")
-
-  echo "Legende:"
-  echo "  Grün  = bester GenAI-Score"
-  echo "  Gelb  = gute Balance"
-  echo "  Blau  = günstig"
-  echo
 
   local -a scored_rows=()
   local i
@@ -455,11 +368,10 @@ PY
 
   local limit=${#rows[@]}
   if [[ "$limit" -le 0 ]]; then
-    echo "[ERR] Nach Score-Sortierung sind keine finalen Angebote uebrig geblieben." >&2
+    echo "[ERR] Keine Rechnerkonfigurationen nach Score-Filterung verblieben." >&2
     exit 1
   fi
 
-  local best_idx=0
   printf '%-3s %-10s %-14s %4s %7s %7s %8s %8s %7s %7s %8s %8s %8s %7s %s\n' \
     "Nr" "Offer_ID" "Model" "GPUx" "$/hr" "Init$" "Eff$/h" "DLMB/s" "DL20m" "Readym" "VRAM" "Ports" "Country" "Score" "Ver"
   printf '%s\n' "------------------------------------------------------------------------------------------------------------------------------------------"
@@ -468,7 +380,7 @@ PY
     local oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified score line
     IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$i]}"
     score="$(score_offer "$eff" "$dl" "$dlu" "$rel" "$vram" "$numg" "$est_ready_min" "$inet_down")"
-    if [[ -z "${country// }" || "$country" == "--" ]]; then country="unknown"; fi
+    
     line=$(printf '%-3s %-10s %-14s %4.0f %7.2f %7.2f %8.2f %8.0f %7.0f %7.0f %8.1f %8.0f %8s %7.2f %s' \
       "$((i+1))" "$oid" "$model" "$numg" "$price" "$tx" "$eff" "$inet_down" "$est_dl_min_r" "$est_ready_min_r" "$vram" "$ports" "$country" "$score" "$verified")
     case "$i" in
@@ -480,128 +392,16 @@ PY
     printf '\n'
   done
 
+  # Vorschlags-Zusammenfassung am Ende
   local oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$best_idx]}"
+  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[0]}"
 
   echo
-  echo "Vorschlag: Nummer $((best_idx+1)) ($oid / $model / ${country})"
+  echo "Vorschlag: Nummer 1 ($oid / $model / ${country})"
   echo "  - Stundenpreis: $(fmt2 "$price") $/h"
-  echo "  - Initiale 20GB-Beladung: $(fmt2 "$tx") $"
   echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: $(fmt2 "$eff") $/h"
-  echo "  - Downloadrate: $(fmt2 "$inet_down") Mb/s"
-  echo "  - Geschaetzte 20GB-Downloadzeit: ${est_dl_min_r} min"
-  echo "  - Geschaetzte Bereitstellung (inkl. Overhead): ${est_ready_min_r} min"
-  echo "  - Monatliche Storage-Kosten fuer 20GB: $(fmt2 "$month") $/Monat"
-  echo "  - DLPerf: $(fmt2 "$dl"), DLPerf/\$: $(fmt2 "$dlu"), VRAM: $(fmt2 "$vram") GB, Country: ${country}, Ports: $(fmt2 "$ports")"
-  echo "  - Hinweis: In der Auswahl kann mit q das Skript beendet werden."
+  echo "  - Standort: ${country}"
   echo
-
-  if [[ $dry -eq 1 ]]; then
-    echo "[HINWEIS] Dry-run aktiv, keine Auswahl/Buchung."
-    exit 0
-  fi
-
-  local choice=""
-  while [[ -z "$choice" ]]; do
-    read -r -p "Welche Nummer verwenden? [1-$limit] (Enter = $((best_idx+1)), q=quit): " raw_choice
-    if [[ "${raw_choice,,}" == "q" ]]; then
-      echo "Abgebrochen."
-      exit 0
-    elif [[ -z "$raw_choice" ]]; then
-      choice="$((best_idx+1))"
-    elif [[ "$raw_choice" =~ ^[0-9]+$ ]] && (( raw_choice >= 1 && raw_choice <= limit )); then
-      choice="$raw_choice"
-    else
-      echo "Ungueltige Eingabe. Bitte nur eine gueltige Nummer eingeben oder q zum Beenden."
-    fi
-  done
-
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$((choice-1))]}"
-
-  echo
-  echo "Gewählt: $choice -> $oid / $model"
-  echo "  - Erwartete 20GB-Downloadzeit: ${est_dl_min_r} min"
-  echo "  - Erwartete Gesamt-Bereitstellung (inkl. Overhead): ${est_ready_min_r} min"
-
-  if [[ $DO_BOOK -ne 1 ]]; then
-    echo "[HINWEIS] Keine automatische Buchung aktiviert."
-    echo "[HINWEIS] Fuer echte Buchung Script mit --book starten."
-    exit 0
-  fi
-
-  if [[ -z "$TEMPLATE_HASH" ]]; then
-    echo "[ERR] Kein Template-Hash gesetzt." >&2
-    exit 2
-  fi
-
-  echo
-  echo "[INFO] Buchungsvorbereitung"
-  echo "  Offer-ID:      $oid"
-  echo "  Modell/GPU:    $model"
-  echo "  Template Hash: $TEMPLATE_HASH"
-  echo "  Disk:          ${DISK_GB} GB"
-  echo "  ETA 20GB DL:   ${est_dl_min_r} min"
-  echo "  ETA Ready:     ${est_ready_min_r} min"
-  echo
-  read -r -p "Buchung jetzt wirklich ausfuehren? [j/N]: " confirm
-  if [[ "${confirm,,}" != "j" ]]; then
-    echo "Abgebrochen."
-    exit 0
-  fi
-
-  local book_out book_rc
-  book_out="$(mktemp)"
-  echo "[INFO] Fuehre Buchung aus..."
-  set +e
-  vast_cmd create instance "$oid" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" >"$book_out" 2>&1
-  book_rc=$?
-  set -e
-  cat "$book_out"
-  if [[ $book_rc -ne 0 ]]; then
-    echo "[ERR] Buchung fehlgeschlagen (RC=$book_rc)." >&2
-    rm -f "$book_out"
-    exit 1
-  fi
-
-  local instance_id=""
-  instance_id="$(python3 - "$book_out" <<'PY'
-import json, re, sys
-p = sys.argv[1]
-txt = open(p, 'r', encoding='utf-8', errors='replace').read().strip()
-try:
-    data = json.loads(txt)
-    if isinstance(data, dict):
-        for k in ('new_contract', 'instance_id', 'id'):
-            if k in data and data[k] not in (None, ''):
-                print(str(data[k]))
-                raise SystemExit(0)
-    elif isinstance(data, list) and data:
-        first = data[0]
-        if isinstance(first, dict):
-            for k in ('new_contract', 'instance_id', 'id'):
-                if k in first and first[k] not in (None, ''):
-                    print(str(first[k]))
-                    raise SystemExit(0)
-except Exception: pass
-m = re.search(r'\b([0-9]{4,})\b', txt)
-if m: print(m.group(1))
-PY
-  )"
-  rm -f "$book_out"
-
-  echo
-  echo "[OK] Buchung erfolgreich."
-  if [[ -n "$instance_id" ]]; then
-    echo "[INFO] Instance-ID: $instance_id"
-    echo "[INFO] Details abrufen mit:"
-    echo "       $(vast_bin) show instance $instance_id"
-    echo "[INFO] SSH-URL abrufen mit:"
-    echo "       $(vast_bin) ssh-url $instance_id"
-  else
-    echo "[WARN] Instance-ID konnte nicht eindeutig aus der CLI-Ausgabe extrahiert werden."
-    echo "[INFO] Bitte Instanzen anzeigen mit:"
-    echo "       $(vast_bin) show instances"
-  fi
 }
 
 main "$@"
