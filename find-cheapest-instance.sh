@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
+# PATH-Erweiterung für Konsistenz in verschiedenen Shell-Umgebungen
+export PATH=$PATH:~/.local/bin:/usr/local/bin:/usr/bin
+
 set -eEuo pipefail
 
 # Skript-Name: find-cheapest-instance
-VERSION="2026-05-25.32"
+VERSION="2026-05-25.34"
 
 : <<'SCRIPT_OVERVIEW'
 ========================================================================
-ZWECK: Suche, Bewertung, Scoring und interaktive Buchung.
+ZWECK: Suche, Bewertung, Scoring und interaktive Buchung von Vast.ai.
 FEATURES:
-- Support für: --test, --dry-run, --book [NUM]
-- Scoring-Logik: Cost/VRAM/Reliability/GPU-Penalty
-- Metriken: Vollständige 11-Spalten-Tabelle inkl. Ready-Time
-- Kontrolle: Manuelles Überschreiben der Vorauswahl via Buchungs-Index
+- Optionen: --test, --dry-run, --book [NUM]
+- Scoring: Cost/VRAM/Reliability/GPU-Penalty
+- Tabelle: 11-Spalten-Layout (Nr, ID, Model, GPUs, $/hr, Init$, Eff$/h, DL, Ready, VRAM, Geo, Score)
+- Stabilität: PATH-Fix und striktes Field-Mapping via Python-Pipeline.
 ========================================================================
 SCRIPT_OVERVIEW
 
@@ -20,6 +23,13 @@ SEARCH_LIMIT=120
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 GPU_FILTER='RTX (3090|4090|A5000|A6000|5000|6000)'
 DISK_GB=40; TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"; MODEL_GB=20; SESSION_HOURS=3
+
+# Hilfsfunktionen
+vast_cmd() {
+    if command -v vastai >/dev/null 2>&1; then vastai "$@"
+    elif command -v vast >/dev/null 2>&1; then vast "$@"
+    else echo "[ERROR] 'vastai' oder 'vast' nicht gefunden."; exit 1; fi
+}
 
 main() {
   local DO_BOOK=0; local BOOK_INDEX=""; local TEST_MODE=0; local DRY_RUN=0
@@ -39,7 +49,7 @@ main() {
   # Datenabruf
   [[ "$TEST_MODE" -ne 1 ]] && vast_cmd search offers --raw "$QUERY" -o 'dlperf_usd-' --limit "$SEARCH_LIMIT" >/tmp/vast_data.json || touch /tmp/vast_data.json
   
-  # Pipeline mit voller Scoring-Logik
+  # Python-Pipeline: Scoring + Metriken
   local parsed
   parsed="$(python3 - "/tmp/vast_data.json" "$SEARCH_LIMIT" "$GPU_FILTER" "$MODEL_GB" "$SESSION_HOURS" <<'PY'
 import json, sys, re
@@ -56,15 +66,13 @@ try:
         vram = float(o.get('gpu_ram', 0)) / (1024 if float(o.get('gpu_ram', 0)) > 200 else 1)
         rel = float(o.get('reliability', 1))
         numg = float(o.get('num_gpus', 1))
-        
-        # Scoring-Logik (Rekonstruiert)
         score = ((1.0/max(dph, 0.0001))*0.47 + (1.22 if vram>80 else 0.75)*0.16 + (rel**2)*0.14) * (1.0 if numg<=1 else 0.82)
         print(f"{o.get('id')}\t{gpu[:12]}\t{numg:.0f}\t{dph:.2f}\t{init:.2f}\t{(dph + init/float(sys.argv[5])):.2f}\t{dl:.0f}\t{ready:.0f}\t{vram:.0f}\t{o.get('geolocation', 'US')[:2]}\t{score:.2f}")
 except: sys.exit(1)
 PY
   )"
 
-  # Tabelle
+  # Tabelle ausgeben
   printf "%-4s %-10s %-12s %-4s %-6s %-6s %-8s %-6s %-6s %-6s %-4s %-6s\n" "Nr" "ID" "Model" "GPUs" "$/hr" "Init$" "Eff$/h" "DLMB/s" "Ready" "VRAM" "Geo" "Score"
   printf '%s\n' "----------------------------------------------------------------------------------------------------"
   
@@ -75,14 +83,12 @@ PY
     ((i++))
   done <<< "$parsed"
 
-  # Buchung mit Überschreiben-Möglichkeit
+  # Buchung
   if [[ "$DO_BOOK" -eq 1 ]]; then
     [[ -z "$BOOK_INDEX" ]] && read -p "Nr zur Buchung wählen: " BOOK_INDEX
     [[ "$DRY_RUN" -eq 1 ]] && { echo "[DRY-RUN] Instanz $BOOK_INDEX wäre gebucht."; exit 0; }
-    
     local selected="${rows[$((BOOK_INDEX-1))]}"
     local id="${selected%|*}"; local model="${selected#*|}"
-    
     read -p "Buchung $id ($model) bestätigen [y/N]: " confirm
     [[ "$confirm" == [yY] ]] && vast_cmd create instance "$id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB"
   fi
