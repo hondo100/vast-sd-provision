@@ -2,7 +2,7 @@
 export PATH=$PATH:~/.local/bin:/usr/local/bin:/usr/bin
 set -eEuo pipefail
 
-VERSION="2026-05-25.39"
+VERSION="2026-05-25.40"
 RESULTS=10
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 GPU_FILTER='RTX (3090|4090|A5000|A6000|5000|6000)'
@@ -72,14 +72,16 @@ PY
     [[ $j -ge $RESULTS ]] && break
     IFS=$'\t' read -r id model ngpu dph init eff dl ready vram geo score test_c <<< "${lines[$j]}"
     line=$(printf "%-5d %-12s %-16s %-5s %-7.2f %-7.2f %-8.2f %-7.0f %-6.0f %-6.0f %-5s %-6.2f" "$((j+1))" "$id" "$model" "$ngpu" "$dph" "$init" "$eff" "$dl" "$ready" "$vram" "$geo" "$score")
-    if [ "$j" -eq 0 ]; then c 32 "$line (Top Score)"
+    if [ "$j" -eq 0 ] && [ "$j" -eq "$cheapest_idx" ]; then c 36 "$line (Top & Best Test)"
+    elif [ "$j" -eq 0 ]; then c 32 "$line (Top Score)"
     elif [ "$j" -eq "$cheapest_idx" ]; then c 33 "$line (Best Test)"
     else printf '%s\n' "$line"; fi
     rows+=("$id|$model")
   done
 
   if [[ "$DO_BOOK" -eq 1 ]]; then
-    [[ -z "$BOOK_INDEX" ]] && read -p "Nr zur Buchung wählen: " BOOK_INDEX
+    read -p "Nr zur Buchung (oder 'q' zum Beenden): " BOOK_INDEX
+    [[ "$BOOK_INDEX" == "q" ]] && { echo "Abbruch."; exit 0; }
     [[ "$DRY_RUN" -eq 1 ]] && { echo "[DRY-RUN] Instanz $BOOK_INDEX wäre gebucht."; exit 0; }
     local sel="${rows[$((BOOK_INDEX-1))]}"; read -p "Buchung ${sel%|*} (${sel#*|}) bestätigen [y/N]: " conf
     [[ "$conf" == [yY] ]] && vast_cmd create instance "${sel%|*}" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB"
