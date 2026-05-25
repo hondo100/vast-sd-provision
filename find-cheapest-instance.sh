@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eEuo pipefail
 
-VERSION="2026-05-25.15"
+VERSION="2026-05-25.16"
 
 # ============================================================================ #
 # GLOBALE KONFIGURATION / DEFAULTS
@@ -27,6 +27,7 @@ REF_DL_MBPS=1370.0
 REF_TOTAL_OVERHEAD_MIN=7.0
 
 DO_BOOK=0
+BOOK_INDEX=""
 DISK_GB=40
 TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
 
@@ -43,76 +44,16 @@ ZWECK
 - Es bewertet die geschaetzte Downloadzeit fuer 20GB
   sowie die geschaetzte Gesamt-Bereitstellungszeit.
 
-- Es filtert chinesische Angebote nur clientseitig im Python-Parser.
-- Serverseitig werden nur von Vast unterstuetzte Suchfilter verwendet.
-- Die Bereitstellungszeit-Schaetzung nutzt eine empirische Referenz:
-  bei 1370 Mb/s betrug der Initial-Overhead ca. 7 Minuten.
-
-========================================================================
-ENTDECKUNGEN / FINDINGS / LOGIK
-========================================================================
-1) EMPIRISCHE BEWERTUNG:
-   - Bei 1370 Mb/s habe ich beobachtet:
-     - 20GB-Download selbst dauert kurz,
-     - aber die Gesamt-Bereitstellung (inkl. Setup, Datei-/Model-I/O) ca. 7 Minuten.
-
-2) MODELL:
-   - Download-Zeit = reine Netzzeit.
-   - Zusatz-Overhead steigt bei schnelleren Verbindungen nicht weiter an,
-     sondern bleibt an der Referenz orientiert.
-
-3) CHINA-FILTER:
-   - location_country ist KEIN gueltiges Vast-Suchfeld.
-   - Deshalb keine serverseitige China-Filterung.
-   - Clientseitig werden Angebote mit geolocation/location auf CN / China gefiltert.
-
-4) TABELLENFORMAT:
-   - Jede Zeile wird in exakt dieselbe Spaltenreihenfolge ausgegeben,
-     damit keine Verschiebung mehr entsteht.
-   - verified hat eine eigene Spalte am Ende.
-
-========================================================================
-WICHTIGE ERKENNTNISSE / PROBLEME / SPEZIALLOGIK
-========================================================================
-1) Vast CLI + --raw ist der bevorzugte Suchpfad.
-2) location_country ist KEIN gültiges Suchfeld: nicht in QUERY verwenden.
-3) Tabellen-Parsing vermeiden, JSON bevorzugen.
-4) Rohdiagnose vor Parserumbauten.
-5) Grosse JSON-Daten nie per Environment-Variable an Python uebergeben.
-6) Fuer ~20GB-Modelle ist 24GB VRAM eine sinnvolle Mindestschwelle.
-7) Downloadgeschwindigkeit (`inet_down`) ist fuer die tatsaechliche
-   Time-to-Ready relevant und fliesst in Bewertung und Tabelle ein.
-8) Die angezeigte Bereitstellungszeit ist eine SCHAETZUNG:
-   - aus inet_down (Mb/s),
-   - multipliziert mit einem Effizienzfaktor,
-   - plus einem netzwerkhaengigen Initial-Overhead (7 Minuten bei 1370 Mb/s).
-9) `reliability` wird weiter intern im Score verwendet, aber nicht
-   mehr in der Tabelle angezeigt.
-10) Template-Buchung bedeutet:
-    - Offer-ID bleibt Pflicht
-    - template_hash liefert die Basiskonfiguration
-    - disk sollte explizit gesetzt werden
-11) GEOLOCATION / LAND:
-    - Die API liefert kein flaches Feld 'location_country'. Die Information
-      befindet sich im Feld 'geolocation' (z.B. "Frankfurt, DE"). Das Skript
-      extrahiert das ISO-Kürzel am Ende dieses Strings via Regex.
-12) GPU-MODELL-FILTER:
-    - Über `GPU_FILTER` bzw. `--gpu-filter` wird ein regulärer Ausdruck an den
-      Python-Parser übergeben, der den Feldwert `gpu_name` filtert (z.B. restriktiv
-      nur 3090er oder 4090er Klassen zulässt).
-13) Nach jedem groesseren Edit:
-      bash -n ./find-cheapest-instance.sh
-
 ========================================================================
 ÄNDERUNGSHISTORIE
 ========================================================================
-v2026-05-25.14:
-  - Clientseitiger China-Filter und Tabellenformatierung optimiert.
-v2026-05-25.15 (Aktuelle Version):
-  - FEHLENDE BUCHUNGSLOGIK BEHOBEN: Der Parameter --book setzt nun am Ende
-    der main() die automatisierte Instanz-Erstellung via vastai um.
-  - HÄRTUNG GEGEN set -e: Der API-Aufruf fängt Fehler sauber ab und verhindert
-    einen stummen Skript-Abbruch.
+v2026-05-25.15:
+  - FEHLENDE BUCHUNGSLOGIK BEHOBEN: Automatische Instanz-Erstellung via vastai.
+v2026-05-25.16 (Aktuelle Version):
+  - INTERAKTIVE RECHNERAUSWAHL: --book akzeptiert nun optionale Nummern (--book 3).
+    Ohne Nummer wird interaktiv nach der Zeilennummer der Tabelle gefragt.
+  - SICHERHEITSABFRAGE: Vor dem Absenden des Buchungsbefehls schützt eine explizite
+    Bestätigungsschleife vor Fehlkäufen. Validierung gegen Tabellen-Obergrenze.
 ========================================================================
 SCRIPT_OVERVIEW
 
@@ -120,7 +61,7 @@ usage() {
   cat <<EOF
 Usage: $0 [--test] [--dry-run] [--diag] [--debug-json] [--debug-json-limit N]
           [--model-gb N] [--session-hours N] [--results N] [--search-limit N]
-          [--book] [--template-hash HASH] [--disk N] [--gpu-filter REGEX]
+          [--book [NUM]] [--template-hash HASH] [--disk N] [--gpu-filter REGEX]
 EOF
 }
 
@@ -199,7 +140,13 @@ main() {
       --session-hours) shift; SESSION_HOURS="${1:?Fehlender Wert fuer --session-hours}" ;;
       --results) shift; RESULTS="${1:?Fehlender Wert fuer --results}" ;;
       --search-limit) shift; SEARCH_LIMIT="${1:?Fehlender Wert fuer --search-limit}" ;;
-      --book) DO_BOOK=1 ;;
+      --book) 
+        DO_BOOK=1 
+        if [[ $# -gt 1 && "$2" =~ ^[0-9]+$ ]]; then
+          BOOK_INDEX="$2"
+          shift
+        fi
+        ;;
       --template-hash) shift; TEMPLATE_HASH="${1:?Fehlender Wert fuer --template-hash}" ;;
       --disk) shift; DISK_GB="${1:?Fehlender Wert fuer --disk}" ;;
       --gpu-filter) shift; GPU_FILTER="${1:?Fehlender Wert fuer --gpu-filter}" ;;
@@ -413,29 +360,65 @@ PY
     printf '\n'
   done
 
-  # Vorschlags-Zusammenfassung am Ende
-  local oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified
-  IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[0]}"
-
-  echo
-  echo "Vorschlag: Nummer 1 ($oid / $model / ${country})"
-  echo "  - Stundenpreis: $(fmt2 "$price") $/h"
-  echo "  - Effektivpreis bei ${SESSION_HOURS}h Sitzung: $(fmt2 "$eff") $/h"
-  echo "  - Standort: ${country}"
-  echo
-
   # ==========================================================================
-  # NEU: BUCHUNGSLOGIK (Wird durch --book aktiviert)
+  # INTERAKTIVE ODER DIRECT-INDEX BUCHUNGSLOGIK
   # ==========================================================================
   if [[ "${DO_BOOK}" -eq 1 ]]; then
+    # Wenn keine Nummer über das CLI übergeben wurde, fragen wir interaktiv nach
+    if [[ -z "${BOOK_INDEX}" ]]; then
+      echo
+      while true; do
+        read -p "Bitte die gewünschte Nummer (Nr 1-$limit) für die Buchung eingeben: " BOOK_INDEX
+        if [[ "$BOOK_INDEX" =~ ^[0-9]+$ ]] && [[ "$BOOK_INDEX" -ge 1 ]] && [[ "$BOOK_INDEX" -le "$limit" ]]; then
+          break
+        fi
+        echo "[WARN] Ungültige Auswahl. Bitte eine Zahl zwischen 1 und $limit eingeben."
+      done
+    else
+      # Validierung falls Nummer direkt per Parameter übergeben wurde
+      if [[ "$BOOK_INDEX" -lt 1 || "$BOOK_INDEX" -gt "$limit" ]]; then
+        echo "[ERR] Übergebene Nummer ($BOOK_INDEX) existiert nicht in der Tabelle (Bereich: 1-$limit)." >&2
+        exit 10
+      fi
+    fi
+
+    # Array-Index verschieben (Tabelle startet bei 1, Bash-Array bei 0)
+    local target_idx=$((BOOK_INDEX - 1))
+
+    local oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified
+    IFS=$'\t' read -r oid model numg price tx eff month dl dlu rel vram country inet_down disk_space ports est_dl_min est_ready_min est_dl_min_r est_ready_min_r verified <<< "${rows[$target_idx]}"
+
+    echo
+    echo "------------------------------------------------------------------"
+    yellow "SICHERHEITSABFRAGE: Instanz-Buchung"
+    echo "------------------------------------------------------------------"
+    echo "Gewählte Tabellennummer : $BOOK_INDEX"
+    echo "Vast Offer ID           : $oid"
+    echo "Modell                  : $model ($numg GPU(s))"
+    echo "Stundenpreis            : $(fmt2 "$price") $/h"
+    echo "Effektivpreis (${SESSION_HOURS}h)   : $(fmt2 "$eff") $/h"
+    echo "Standort                : $country"
+    echo "Konfiguriertes Template : $TEMPLATE_HASH"
+    echo "Zugeordneter Speicher   : ${DISK_GB} GB Disk"
+    echo "------------------------------------------------------------------"
+    
+    local confirm
+    read -p "Möchten Sie diese Instanz jetzt kostenpflichtig buchen? [y/N]: " confirm
+    case "$confirm" in
+      [yY]|[yY][eE][sS])
+        echo "[INFO] Starte automatische Instanzbuchung für Offer ID $oid..."
+        ;;
+      *)
+        echo "[INFO] Buchung abgebrochen. Es wurden keine Ressourcen angefordert."
+        exit 0
+        ;;
+    esac
+
     if [[ -z "${oid:-}" ]]; then
       echo "[ERR] Buchung nicht moeglich: Keine gueltige Offer-ID gefunden." >&2
       exit 10
     fi
 
-    echo "[INFO] --book gesetzt. Starte automatische Instanzbuchung..."
-    echo "[INFO] Bucht Offer ID: $oid mit Template Hash: $TEMPLATE_HASH und ${DISK_GB} GB Disk."
-    
     local book_output
     # if ! konsumiert den Exit-Code, set -e bricht hier NICHT unkontrolliert ab
     if ! book_output=$(vast_cmd create instance "$oid" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" 2>&1); then
@@ -450,7 +433,8 @@ PY
     echo "$book_output"
     echo "------------------------------------------------------------------"
   else
-    echo "[INFO] Suchmodus aktiv. Es wurde keine Buchung vorgenommen (Fuer Buchung '--book' anfuegen)."
+    echo
+    echo "[INFO] Suchmodus aktiv. Es wurde keine Buchung vorgenommen (Fuer Buchung '--book [Nr]' verwenden)."
   fi
 }
 
