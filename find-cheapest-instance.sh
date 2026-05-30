@@ -1,35 +1,34 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# vast_search_optimizer.sh | Version: 2026-05-29.03 (Disk Bandwidth Integration)
+# find-cheapest-instance.sh | Version: 2026-05-30.01 (Decoupled Orchestrator)
 # -----------------------------------------------------------------------------
 export PATH=$PATH:~/.local/bin:/usr/local/bin:/usr/bin
 set -eEuo pipefail
 
-VERSION="2026-05-29.03"
+VERSION="2026-05-30.01"
 RESULTS=10
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 GPU_FILTER='RTX (3090|4090|A5000|A6000|5000|6000)'
-DISK_GB=40; TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"; MODEL_GB=20; SESSION_HOURS=3
-
-# Regressions-Startparameter für das Auswertetool
-export REG_BETA_0="${REG_BETA_0:-165.0}"
-export REG_BETA_1="${REG_BETA_1:-1.38}"
-export REG_BETA_2="${REG_BETA_2:-52.0}"
-export REG_BETA_3="${REG_BETA_3:-120.0}"
+DISK_GB=40
+TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
+MODEL_GB=20
+SESSION_HOURS=3
+PARAMS_JSON="./params.json"
 
 c() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
 
 vast_cmd() {
     if command -v vastai >/dev/null 2>&1; then vastai "$@"
     elif command -v vast >/dev/null 2>&1; then vast "$@"
-    else echo "[ERROR] 'vastai' nicht gefunden."; exit 1; fi
+    else echo "[ERROR] 'vastai' CLI nicht gefunden."; exit 1; fi
 }
 
 main() {
   local DO_BOOK=0; local BOOK_INDEX=""; local TEST_MODE=0; local DRY_RUN=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --test) TEST_MODE=1 ;; --dry-run) DRY_RUN=1 ;;
+      --test) TEST_MODE=1 ;; 
+      --dry-run) DRY_RUN=1 ;;
       --book) DO_BOOK=1; [[ $# -gt 1 && "$2" =~ ^[0-9]+$ ]] && BOOK_INDEX="$2" && shift ;;
       *) echo "Usage: $0 [--test] [--dry-run] [--book [NUM]]"; exit 1 ;;
     esac
@@ -38,80 +37,50 @@ main() {
 
   echo "========================================================================================="
   echo "Skript-Version: $VERSION | Filter: $GPU_FILTER"
-  echo "Regressions-Startparameter: B0=${REG_BETA_0}s, B1=${REG_BETA_1}, B2=${REG_BETA_2}s"
+  echo "Modus: Entkoppelte Inferenz via 'scoring_engine.py'"
   echo "========================================================================================="
 
-  [[ "$TEST_MODE" -ne 1 ]] && vast_cmd search offers --raw "$QUERY" -o 'dlperf_usd-' --limit 120 >/tmp/vast_data.json || touch /tmp/vast_data.json
+  # Datenbeschaffung
+  if [[ "$TEST_MODE" -ne 1 ]]; then
+      vast_cmd search offers --raw "$QUERY" -o 'dlperf_usd-' --limit 120 > /tmp/vast_data.json
+  else
+      touch /tmp/vast_data.json
+  fi
   
+  # Stream-Verarbeitung über Standard-Unix-Pipe
   local parsed
-  parsed="$(python3 - "/tmp/vast_data.json" "$GPU_FILTER" "$MODEL_GB" "$SESSION_HOURS" <<'PY'
-import json, sys, re, os
+  parsed="$(cat /tmp/vast_data.json | python3 ./scoring_engine.py \
+      --gpu_filter "$GPU_FILTER" \
+      --model_gb "$MODEL_GB" \
+      --session_hours "$SESSION_HOURS" \
+      --params "$PARAMS_JSON")"
 
-try:
-    with open(sys.argv[1], 'r') as f: data = json.load(f)
-    offers = data if isinstance(data, list) else data.get('offers', [])
-    rows = []
-    
-    b0 = float(os.environ.get('REG_BETA_0', 165.0))
-    b1 = float(os.environ.get('REG_BETA_1', 1.38))
-    b2 = float(os.environ.get('REG_BETA_2', 52.0))
-    b3 = float(os.environ.get('REG_BETA_3', 120.0))
-    
-    model_gb = float(sys.argv[3])
-    session_hours = float(sys.argv[4])
-
-    for o in offers:
-        gpu = str(o.get('gpu_name', 'unk'))
-        if not re.search(sys.argv[2], gpu, re.IGNORECASE): continue
-        
-        dph, init = float(o.get('dph_total', 0)), float(o.get('inet_down_cost', 0))
-        dl, vram = float(o.get('inet_down', 1)), float(o.get('gpu_ram', 0))
-        if vram > 200: vram /= 1024
-        
-        # ÄNDERUNG: Extraktion der Festplatten-Lesebandbreite (disk_bw) in MB/s statt disk_space
-        dbw = float(o.get('disk_bw', 0))
-        
-        rel = float(o.get('reliability', 1.0))
-        numg = float(o.get('num_gpus', 1))
-        
-        net_download_seconds = (model_gb * 8192.0) / max(dl, 0.1)
-        estimated_ready_seconds = b0 + b2 + (b1 * net_download_seconds) + (b3 * (1.0 - rel))
-        ready = estimated_ready_seconds / 60.0
-        
-        score = ((1.0/max(dph, 0.0001))*0.47 + (1.22 if vram>80 else 0.75)*0.16 + (rel**2)*0.14) * (1.0 if numg<=1 else 0.82)
-        test_cost = dph * 0.5 + init
-        
-        # Injektion der Bandbreite an Index 9 des Daten-Tuples
-        rows.append((o.get('id'), gpu[:14], numg, dph, init, (dph + init/session_hours), dl, ready, vram, dbw, o.get('geolocation', 'US')[:2], score, test_cost))
-        
-    for r in sorted(rows, key=lambda x: x[11], reverse=True):
-        print(f"{r[0]}\t{r[1]}\t{r[2]:.0f}\t{r[3]:.2f}\t{r[4]:.2f}\t{r[5]:.2f}\t{r[6]:.0f}\t{r[7]:.0f}\t{r[8]:.0f}\t{r[9]:.0f}\t{r[10]}\t{r[11]:.2f}\t{r[12]:.2f}")
-except Exception as e:
-    sys.stderr.write(f"Python Error: {str(e)}\n")
-    sys.exit(1)
-PY
-  )"
-
-  # Tabellenkopf: vDisk zu DskBW abgeändert (Spaltenbreite von 6 Zeichen exakt beibehalten)
+  # Tabellenkopf (Schnittstellen-Breiten exakt bewahrt)
   printf "%-5s %-12s %-16s %-5s %-7s %-7s %-8s %-7s %-6s %-5s %-6s %-4s %-6s\n" "Nr" "ID" "Model" "GPUs" "$/hr" "Init$" "Eff$/h" "DLMB/s" "Ready" "VRAM" "DskBW" "Geo" "Score"
   printf '%s\n' "-----------------------------------------------------------------------------------------------------------------"
   
   local i=0; local rows=(); local cheapest_idx=-1; local min_test=999999
+  
+  # Erster Durchlauf: Günstigste Instanz für Test-Kosten ermitteln
   mapfile -t lines <<< "$parsed"
   for j in "${!lines[@]}"; do
     [[ $j -ge $RESULTS ]] && break
     [[ -z "${lines[$j]}" ]] && continue
-    # Daten-Schnittstelle: 12 anonymisierte Slices fangen die Felder vor den Testkosten ab
     IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ _ test_c <<< "${lines[$j]}"
-    if (( $(echo "$test_c < $min_test" | bc -l) )); then min_test=$test_c; cheapest_idx=$j; fi
+    if (( $(echo "$test_c < $min_test" | bc -l) )); then 
+        min_test=$test_c
+        cheapest_idx=$j
+    fi
   done
 
+  # Zweiter Durchlauf: Formatierte und farbkodierte Ausgabe
   for j in "${!lines[@]}"; do
     [[ $j -ge $RESULTS ]] && break
     [[ -z "${lines[$j]}" ]] && continue
-    # Extraktion inklusive der neuen dbw (Disk Bandwidth) Variable
     IFS=$'\t' read -r id model ngpu dph init eff dl ready vram dbw geo score test_c <<< "${lines[$j]}"
+    
     line=$(printf "%-5d %-12s %-16s %-5s %-7.2f %-7.2f %-8.2f %-7.0f %-6.0f %-5.0f %-6.0f %-4s %-6.2f" "$((j+1))" "$id" "$model" "$ngpu" "$dph" "$init" "$eff" "$dl" "$ready" "$vram" "$dbw" "$geo" "$score")
+    
     if [ "$j" -eq 0 ] && [ "$j" -eq "$cheapest_idx" ]; then c 36 "$line (Top & Best Test)"
     elif [ "$j" -eq 0 ]; then c 32 "$line (Top Score)"
     elif [ "$j" -eq "$cheapest_idx" ]; then c 33 "$line (Best Test)"
@@ -119,11 +88,23 @@ PY
     rows+=("$id|$model")
   done
 
+  # Interaktive Buchungslogik
   if [[ "$DO_BOOK" -eq 1 ]]; then
-    read -p "Nr zur Buchung (oder 'q' zum Beenden): " BOOK_INDEX
+    if [[ -z "$BOOK_INDEX" ]]; then
+        echo ""
+        read -p "Nr zur Buchung (oder 'q' zum Beenden): " BOOK_INDEX
+    fi
     [[ "$BOOK_INDEX" == "q" ]] && { echo "Abbruch."; exit 0; }
     [[ "$DRY_RUN" -eq 1 ]] && { echo "[DRY-RUN] Instanz $BOOK_INDEX wäre gebucht."; exit 0; }
-    local sel="${rows[$((BOOK_INDEX-1))]}"; read -p "Buchung ${sel%|*} (${sel#*|}) bestätigen [y/N]: " conf
+    
+    local idx=$((BOOK_INDEX-1))
+    if [[ $idx -lt 0 || $idx -ge ${#rows[@]} ]]; then
+        echo "[FEHLER] Ungültige Auswahl."
+        exit 1
+    fi
+    
+    local sel="${rows[$idx]}"
+    read -p "Buchung ${sel%|*} (${sel#*|}) bestätigen [y/N]: " conf
     [[ "$conf" == [yY] ]] && vast_cmd create instance "${sel%|*}" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB"
   fi
 }
