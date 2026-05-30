@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# find-cheapest-instance.sh | Version: 2026-05-30.02 (Automated State Engine)
+# find-cheapest-instance.sh | Version: 2026-05-30.03 (Multi-Format Engine)
 # -----------------------------------------------------------------------------
 export PATH=$PATH:~/.local/bin:/usr/local/bin:/usr/bin
 set -eEuo pipefail
 
-VERSION="2026-05-30.02"
+VERSION="2026-05-30.03"
 RESULTS=10
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 GPU_FILTER='RTX (3090|4090|A5000|A6000|5000|6000)'
@@ -116,14 +116,15 @@ main() {
         echo "$book_output"
         
         # Stufe 1: Extraktion via Perl-compatible Regular Expressions (PCRE)
+        # Erkennt 'contract #1234', 'new_contract': 1234 und "new_contract": 1234
         local extracted_id=""
         if command -v grep >/dev/null 2>&1; then
-            extracted_id=$(echo "$book_output" | grep -oP 'contract #\K\d+' || true)
+            extracted_id=$(echo "$book_output" | grep -oP "(contract #|'new_contract':\s*|\"new_contract\":\s*)\K\d+" || true)
         fi
         
-        # Stufe 2: Fallback via POSIX-sed, falls PCRE-grep im WSL blockiert ist
+        # Stufe 2: Fallback via POSIX-sed (Erweiterte Reguläre Ausdrücke - ERE)
         if [[ -z "$extracted_id" ]]; then
-            extracted_id=$(echo "$book_output" | sed -n 's/.*contract #\([0-9]\+\).*/\1/p')
+            extracted_id=$(echo "$book_output" | sed -n -E "s/.*(contract #|'new_contract':[[:space:]]*|\"new_contract\":[[:space:]]*)([0-9]+).*/\2/p")
         fi
         
         # Stufe 3: Zustandsspeicherung evaluieren
