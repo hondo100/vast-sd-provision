@@ -11,10 +11,10 @@ TELEMETRY_FILE="./latest_telemetry.json"
 
 # 1. Validierung: Prüfen, ob eine aktive Instanz registriert ist
 if [[ ! -f "$STATE_FILE" ]]; then
-    c() { printf '\033[31m%s\033[0m\n' "$1"; }
-    c "[FEHLER] Keine aktive Zustandsdatei gefunden ($STATE_FILE)."
-    echo "Es ist aktuell keine Instanz im System registriert oder der Cleanup wurde bereits ausgeführt."
-    exit 1
+    c() { printf '\033[31m%s\033[0m\n' "$1"; }
+    c "[FEHLER] Keine aktive Zustandsdatei gefunden ($STATE_FILE)."
+    echo "Es ist aktuell keine Instanz im System registriert oder der Cleanup wurde bereits ausgeführt."
+    exit 1
 fi
 
 # Atomares Auslesen der Instance-ID
@@ -28,32 +28,32 @@ echo "Hole Telemetriedaten von Instanz $INSTANCE_ID vor dem Destroy..."
 
 # 2. Defensiver Pull über das Vast.ai API Gateway
 if vastai copy-from "$INSTANCE_ID":/workspace/provisioning_telemetry.json "$TELEMETRY_FILE" 2>/dev/null; then
-    echo "[INFO] Telemetriedaten erfolgreich lokal gesichert."
+    echo "[INFO] Telemetriedaten erfolgreich lokal gesichert."
 else
-    echo "[WARNUNG] Telemetriedaten konnten nicht kopiert werden (Instanz evtl. nicht bereit)."
+    echo "[WARNUNG] Telemetriedaten konnten nicht kopiert werden (Instanz evtl. nicht bereit)."
 fi
 
 # 3. Instanz zerstören (Garantierte Kostenvermeidung)
 echo "Zerstöre Vast.ai-Instanz $INSTANCE_ID zur Kostenvermeidung..."
-vastai destroy "$INSTANCE_ID"
+vastai destroy instance "$INSTANCE_ID"
 
 # 4. Parameter-Optimierung und Format-Sanitizing lokal ausführen
 if [[ -f "$TELEMETRY_FILE" ]]; then
-    
-    # --- NEU: CRLF zu LF Sanitizing-Stufe via sed ---
-    echo "[PROZESS] Sanitiere Zeilenenden (CRLF -> LF) für JSON-Infrastruktur..."
-    sed -i 's/\r$//' "$PARAMS_FILE" "$TELEMETRY_FILE"
-    # ------------------------------------------------
-    
-    echo "Starte Parameter-Optimierung (optimizer.py) lokal..."
-    python3 ./optimizer.py --telemetry "$TELEMETRY_FILE" --params "$PARAMS_FILE" --alpha 0.25
-    rm "$TELEMETRY_FILE"
+    
+    # --- NEU: CRLF zu LF Sanitizing-Stufe via sed ---
+    echo "[PROZESS] Sanitiere Zeilenenden (CRLF -> LF) für JSON-Infrastruktur..."
+    sed -i 's/\r$//' "$PARAMS_FILE" "$TELEMETRY_FILE"
+    # ------------------------------------------------
+    
+    echo "Starte Parameter-Optimierung (optimizer.py) lokal..."
+    python3 ./optimizer.py --telemetry "$TELEMETRY_FILE" --params "$PARAMS_FILE" --alpha 0.25
+    rm "$TELEMETRY_FILE"
 else
-    # Falls das Telemetrie-File fehlt, zumindest die params.json vorsorglich bereinigen
-    if [[ -f "$PARAMS_FILE" ]]; then
-        sed -i 's/\r$//' "$PARAMS_FILE"
-    fi
-    echo "[INFO] Überspringe Optimierungsphase, da keine Telemetriedaten vorliegen."
+    # Falls das Telemetrie-File fehlt, zumindest die params.json vorsorglich bereinigen
+    if [[ -f "$PARAMS_FILE" ]]; then
+        sed -i 's/\r$//' "$PARAMS_FILE"
+    fi
+    echo "[INFO] Überspringe Optimierungsphase, da keine Telemetriedaten vorliegen."
 fi
 
 # 5. Zurücksetzen des Systemzustands
