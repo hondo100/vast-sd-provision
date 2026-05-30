@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# find-cheapest-instance.sh | Version: 2026-05-30.01 (Decoupled Orchestrator)
+# find-cheapest-instance.sh | Version: 2026-05-30.02 (Automated State Engine)
 # -----------------------------------------------------------------------------
 export PATH=$PATH:~/.local/bin:/usr/local/bin:/usr/bin
 set -eEuo pipefail
 
-VERSION="2026-05-30.01"
+VERSION="2026-05-30.02"
 RESULTS=10
 QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40'
 GPU_FILTER='RTX (3090|4090|A5000|A6000|5000|6000)'
@@ -14,6 +14,7 @@ TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
 MODEL_GB=20
 SESSION_HOURS=3
 PARAMS_JSON="./params.json"
+STATE_FILE="/home/werner/github-scripts/.current_instance"
 
 c() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
 
@@ -37,7 +38,7 @@ main() {
 
   echo "========================================================================================="
   echo "Skript-Version: $VERSION | Filter: $GPU_FILTER"
-  echo "Modus: Entkoppelte Inferenz via 'scoring_engine.py'"
+  echo "Modus: Entkoppelte Inferenz mit automatisierter Status-Erfassung"
   echo "========================================================================================="
 
   # Datenbeschaffung
@@ -104,8 +105,36 @@ main() {
     fi
     
     local sel="${rows[$idx]}"
-    read -p "Buchung ${sel%|*} (${sel#*|}) bestätigen [y/N]: " conf
-    [[ "$conf" == [yY] ]] && vast_cmd create instance "${sel%|*}" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB"
+    local target_id="${sel%|*}"
+    read -p "Buchung $target_id (${sel#*|}) bestätigen [y/N]: " conf
+    if [[ "$conf" == [yY] ]]; then
+        echo "[PROZESS] Sende Buchungsbefehl an Vast.ai..."
+        
+        # Abfangen des CLI-Response-Strings (Kopplung von stdout und stderr)
+        local book_output
+        book_output=$(vast_cmd create instance "$target_id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" 2>&1)
+        echo "$book_output"
+        
+        # Stufe 1: Extraktion via Perl-compatible Regular Expressions (PCRE)
+        local extracted_id=""
+        if command -v grep >/dev/null 2>&1; then
+            extracted_id=$(echo "$book_output" | grep -oP 'contract #\K\d+' || true)
+        fi
+        
+        # Stufe 2: Fallback via POSIX-sed, falls PCRE-grep im WSL blockiert ist
+        if [[ -z "$extracted_id" ]]; then
+            extracted_id=$(echo "$book_output" | sed -n 's/.*contract #\([0-9]\+\).*/\1/p')
+        fi
+        
+        # Stufe 3: Zustandsspeicherung evaluieren
+        if [[ -n "$extracted_id" ]]; then
+            echo "$extracted_id" > "$STATE_FILE"
+            echo "[INFO] Instanz-ID $extracted_id wurde vollautomatisch in $STATE_FILE gesichert."
+        else
+            echo "[WARNUNG] Instanz wurde gestartet, aber die ID-Extraktion schlug fehl."
+            echo "Bitte prüfen Sie den Zustand manuell via 'vastai show instances-v1'."
+        fi
+    fi
   fi
 }
 main "$@"
