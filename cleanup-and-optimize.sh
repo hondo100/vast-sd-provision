@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# cleanup-and-optimize.sh | Version: 2026-05-31.10 (Non-Interactive SSH/SCP Fix + Local Path Guard)
+# cleanup-and-optimize.sh | Version: 2026-05-31.11 (Auto-Dir-Cleanup + Timing-Guard)
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -28,9 +28,15 @@ ensure_local_target_is_file_path() {
     local parent_dir
 
     if [[ -d "$local_path" ]]; then
-        echo "[FEHLER] Zielpfad ist ein Verzeichnis, erwartet wird eine Datei: $local_path"
-        echo "[HINWEIS] Bitte das Verzeichnis umbenennen oder loeschen und das Skript erneut ausfuehren."
-        return 1
+        # FIX: Leeres Verzeichnis automatisch entfernen statt hart abbrechen
+        if [[ -z "$(ls -A "$local_path" 2>/dev/null)" ]]; then
+            echo "[INFO] Zielpfad ist ein leeres Verzeichnis, wird automatisch entfernt: $local_path"
+            rm -rf -- "$local_path"
+        else
+            echo "[FEHLER] Zielpfad ist ein nicht-leeres Verzeichnis: $local_path"
+            echo "[HINWEIS] Bitte manuell pruefen und ggf. loeschen: rm -rf $local_path"
+            return 1
+        fi
     fi
 
     parent_dir="$(dirname "$local_path")"
@@ -123,6 +129,18 @@ PY
     printf '%s %s\n' "$host" "$port"
 }
 
+# FIX: Prüft ob eine Remote-Datei tatsächlich existiert, bevor SCP versucht wird
+remote_file_exists() {
+    local ssh_host="$1"
+    local ssh_port="$2"
+    local remote_path="$3"
+    shift 3
+    local ssh_opts=("$@")
+
+    ssh "${ssh_opts[@]}" -p "$ssh_port" "${SSH_USER}@${ssh_host}" \
+        "test -f '$remote_path' && echo EXISTS || echo MISSING" 2>/dev/null | grep -q "^EXISTS"
+}
+
 copy_from_instance_with_retry() {
     local instance_id="$1"
     local remote_path="$2"
@@ -163,6 +181,15 @@ copy_from_instance_with_retry() {
         -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
         -o StrictHostKeyChecking=accept-new
     )
+
+    # FIX: Prüfe ob Remote-Datei existiert, bevor Retry-Schleife startet
+    echo "[INFO] Pruefe ob Remote-Datei existiert: $remote_path"
+    if ! remote_file_exists "$ssh_host" "$ssh_port" "$remote_path" "${ssh_opts[@]}"; then
+        echo "[WARNUNG] Remote-Datei existiert nicht oder SSH nicht erreichbar: $remote_path"
+        echo "[HINWEIS] Provisionierung evtl. noch nicht abgeschlossen."
+        return 1
+    fi
+    echo "[INFO] Remote-Datei bestaetigt. Starte Kopierversuche..."
 
     while (( attempt <= max_attempts )); do
         echo "[INFO] Kopierversuch $attempt/$max_attempts fuer $label..."
@@ -239,10 +266,11 @@ printf 'y\n' | vastai destroy instance "$INSTANCE_ID"
 # 4. Parameter-Optimierung und Format-Sanitizing lokal ausführen
 if [[ "$TELEMETRY_AVAILABLE" -eq 1 && -f "$TELEMETRY_FILE" ]]; then
 
-    # --- NEU: CRLF zu LF Sanitizing-Stufe via sed ---
-    echo "[PROZESS] Sanitiere Zeilenenden (CRLF -> LF) für JSON-Infrastruktur..."
-    sed -i 's/\r$//' "$PARAMS_FILE" "$TELEMETRY_FILE"
-    # ------------------------------------------------
+    # FIX: Nur vorhandene Dateien sanitieren, kein Abbruch bei fehlendem PARAMS_FILE
+    echo "[PROZESS] Sanitiere Zeilenenden (CRLF -> LF) fuer JSON-Infrastruktur..."
+    for f in "$PARAMS_FILE" "$TELEMETRY_FILE"; do
+        [[ -f "$f" ]] && sed -i 's/\r$//' "$f"
+    done
 
     echo "Starte Parameter-Optimierung (optimizer.py) lokal..."
     python3 ./optimizer.py --telemetry "$TELEMETRY_FILE" --params "$PARAMS_FILE" --alpha 0.25
