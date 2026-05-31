@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# cleanup-and-optimize.sh | Version: 2026-05-31.09 (Non-Interactive SSH/SCP Fix)
+# cleanup-and-optimize.sh | Version: 2026-05-31.10 (Non-Interactive SSH/SCP Fix + Local Path Guard)
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -22,6 +22,24 @@ SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-15}"
 
 # Globale Definition der Farbfunktion zur Vermeidung von POSIX-Parser-Fehlern
 c() { printf '\033[31m%s\033[0m\n' "$1"; }
+
+ensure_local_target_is_file_path() {
+    local local_path="$1"
+    local parent_dir
+
+    if [[ -d "$local_path" ]]; then
+        echo "[FEHLER] Zielpfad ist ein Verzeichnis, erwartet wird eine Datei: $local_path"
+        echo "[HINWEIS] Bitte das Verzeichnis umbenennen oder loeschen und das Skript erneut ausfuehren."
+        return 1
+    fi
+
+    parent_dir="$(dirname "$local_path")"
+    if [[ ! -d "$parent_dir" ]]; then
+        mkdir -p "$parent_dir"
+    fi
+
+    return 0
+}
 
 get_instance_ssh_target() {
     local instance_id="$1"
@@ -117,7 +135,11 @@ copy_from_instance_with_retry() {
     local ssh_port=""
     local ssh_opts=()
 
-    rm -f "$COPY_LOG_FILE"
+    rm -f -- "$COPY_LOG_FILE"
+
+    if ! ensure_local_target_is_file_path "$local_path"; then
+        return 1
+    fi
 
     if ! read -r ssh_host ssh_port < <(get_instance_ssh_target "$instance_id"); then
         echo "[WARNUNG] Kein SSH-Ziel fuer $label verfuegbar. Kopie wird uebersprungen."
@@ -144,7 +166,7 @@ copy_from_instance_with_retry() {
 
     while (( attempt <= max_attempts )); do
         echo "[INFO] Kopierversuch $attempt/$max_attempts fuer $label..."
-        rm -f "$local_path"
+        rm -f -- "$local_path"
 
         if scp -B "${ssh_opts[@]}" -P "$ssh_port" "${SSH_USER}@${ssh_host}:${remote_path}" "$local_path" >>"$COPY_LOG_FILE" 2>&1; then
             if [[ -s "$local_path" ]]; then
@@ -154,7 +176,7 @@ copy_from_instance_with_retry() {
             echo "[WARNUNG] $label wurde ohne Inhalt kopiert. Neuer Versuch..."
         else
             echo "[WARNUNG] SCP-Kopierversuch fuer $label fehlgeschlagen. Versuche Fallback per SSH/cat..."
-            rm -f "$local_path"
+            rm -f -- "$local_path"
             if ssh "${ssh_opts[@]}" -p "$ssh_port" "${SSH_USER}@${ssh_host}" "cat '$remote_path'" >"$local_path" 2>>"$COPY_LOG_FILE"; then
                 if [[ -s "$local_path" ]]; then
                     echo "[INFO] $label erfolgreich via SSH/cat lokal gesichert: $local_path"
