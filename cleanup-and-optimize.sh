@@ -1,144 +1,68 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# cleanup-and-optimize.sh | Version: 2026-05-31.11 (Auto-Dir-Cleanup + Timing-Guard)
+# cleanup-and-optimize.sh | Version: 2026-06-02.01
+# Gehaertet:
+# - vastai execute statt direktem SSH fuer Dateipruefung
+# - vastai copy statt scp fuer Telemetrie-Download
+# - echte Retry-Logik vor Destroy
+# - klare Trennung zwischen "Datei fehlt" und "Instanz/CLI noch nicht bereit"
 # -----------------------------------------------------------------------------
-set -euo pipefail
+set -Eeuo pipefail
 
-# Pfad zur persistenten Zustandsdatei
 STATE_FILE="/home/werner/github-scripts/.current_instance"
 PARAMS_FILE="./params.json"
 TELEMETRY_FILE="./latest_telemetry.json"
 NET_TIME_FILE="./latest_provision_net_time.log"
 COPY_LOG_FILE="./latest_vast_copy.log"
 
-# Remote-Dateien aus provisioning.sh
 REMOTE_TELEMETRY_FILE="/workspace/provisioning_telemetry.json"
 REMOTE_NET_TIME_FILE="/workspace/provision_net_time.log"
 
-# SSH-Einstellungen für nicht-interaktive Zugriffe
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
-SSH_USER="${SSH_USER:-root}"
-SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-15}"
+RETRY_COUNT="${RETRY_COUNT:-12}"
+RETRY_DELAY="${RETRY_DELAY:-10}"
 
-# Globale Definition der Farbfunktion zur Vermeidung von POSIX-Parser-Fehlern
 c() { printf '\033[31m%s\033[0m\n' "$1"; }
+log() { printf '[INFO] %s\n' "$*"; }
+warn() { printf '[WARNUNG] %s\n' "$*" >&2; }
+ok() { printf '[SUCCESS] %s\n' "$*"; }
 
 ensure_local_target_is_file_path() {
     local local_path="$1"
     local parent_dir
 
     if [[ -d "$local_path" ]]; then
-        # FIX: Leeres Verzeichnis automatisch entfernen statt hart abbrechen
         if [[ -z "$(ls -A "$local_path" 2>/dev/null)" ]]; then
-            echo "[INFO] Zielpfad ist ein leeres Verzeichnis, wird automatisch entfernt: $local_path"
+            log "Zielpfad ist ein leeres Verzeichnis, wird entfernt: $local_path"
             rm -rf -- "$local_path"
         else
-            echo "[FEHLER] Zielpfad ist ein nicht-leeres Verzeichnis: $local_path"
-            echo "[HINWEIS] Bitte manuell pruefen und ggf. loeschen: rm -rf $local_path"
+            warn "Zielpfad ist ein nicht-leeres Verzeichnis: $local_path"
             return 1
         fi
     fi
 
     parent_dir="$(dirname "$local_path")"
-    if [[ ! -d "$parent_dir" ]]; then
-        mkdir -p "$parent_dir"
-    fi
-
+    [[ -d "$parent_dir" ]] || mkdir -p "$parent_dir"
     return 0
 }
 
-get_instance_ssh_target() {
-    local instance_id="$1"
-    local instance_json
-    local host=""
-    local port=""
-
-    if ! instance_json="$(vastai show instance "$instance_id" --raw 2>/dev/null)"; then
-        echo "[WARNUNG] Konnte Instanzdaten fuer SSH-Ziel nicht via vastai show instance abrufen." >&2
-        return 1
-    fi
-
-    if command -v python3 >/dev/null 2>&1; then
-        read -r host port < <(
-            python3 - <<'PY' "$instance_json"
-import json
-import sys
-
-raw = sys.argv[1]
-host = ""
-port = ""
-
-try:
-    data = json.loads(raw)
-except Exception:
-    print("", "")
-    raise SystemExit(0)
-
-candidates = []
-if isinstance(data, dict):
-    candidates.append(data)
-    for key in ("instances", "results"):
-        val = data.get(key)
-        if isinstance(val, list):
-            candidates.extend([x for x in val if isinstance(x, dict)])
-        elif isinstance(val, dict):
-            candidates.append(val)
-
-for item in candidates:
-    if not host:
-        for k in ("public_ipaddr", "ssh_host", "host", "hostname", "public_ip"):
-            v = item.get(k)
-            if isinstance(v, str) and v.strip():
-                host = v.strip()
-                break
-
-    if not port:
-        direct_port = item.get("ssh_port")
-        if isinstance(direct_port, int):
-            port = str(direct_port)
-        elif isinstance(direct_port, str) and direct_port.strip().isdigit():
-            port = direct_port.strip()
-
-    if (not port) and isinstance(item.get("ports"), dict):
-        ports = item["ports"]
-        direct = ports.get("22/tcp") or ports.get("22")
-        if isinstance(direct, list) and direct:
-            first = direct[0]
-            if isinstance(first, int):
-                port = str(first)
-            elif isinstance(first, str) and first.strip().isdigit():
-                port = first.strip()
-        elif isinstance(direct, int):
-            port = str(direct)
-        elif isinstance(direct, str) and direct.strip().isdigit():
-            port = direct.strip()
-
-    if host and port:
-        break
-
-print(host, port)
-PY
-        )
-    fi
-
-    if [[ -z "${host:-}" || -z "${port:-}" ]]; then
-        echo "[WARNUNG] SSH-Ziel konnte nicht automatisch ermittelt werden." >&2
-        return 1
-    fi
-
-    printf '%s %s\n' "$host" "$port"
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || {
+        c "[FEHLER] Benoetigter Befehl fehlt: $1"
+        exit 1
+    }
 }
 
-# FIX: Prüft ob eine Remote-Datei tatsächlich existiert, bevor SCP versucht wird
-remote_file_exists() {
-    local ssh_host="$1"
-    local ssh_port="$2"
-    local remote_path="$3"
-    shift 3
-    local ssh_opts=("$@")
+instance_exists() {
+    vastai show instance "$1" --raw >/dev/null 2>&1
+}
 
-    ssh "${ssh_opts[@]}" -p "$ssh_port" "${SSH_USER}@${ssh_host}" \
-        "test -f '$remote_path' && echo EXISTS || echo MISSING" 2>/dev/null | grep -q "^EXISTS"
+remote_file_exists_via_vast() {
+    local instance_id="$1"
+    local remote_path="$2"
+    local out
+
+    out="$(vastai execute "$instance_id" "test -s '$remote_path' && echo EXISTS || echo MISSING" 2>/dev/null || true)"
+    grep -q '^EXISTS$' <<< "$out"
 }
 
 copy_from_instance_with_retry() {
@@ -146,99 +70,79 @@ copy_from_instance_with_retry() {
     local remote_path="$2"
     local local_path="$3"
     local label="$4"
-    local max_attempts=5
-    local attempt=1
 
-    local ssh_host=""
-    local ssh_port=""
-    local ssh_opts=()
+    local attempt=1
+    local exists_state="unknown"
 
     rm -f -- "$COPY_LOG_FILE"
 
-    if ! ensure_local_target_is_file_path "$local_path"; then
-        return 1
-    fi
+    ensure_local_target_is_file_path "$local_path" || return 1
 
-    if ! read -r ssh_host ssh_port < <(get_instance_ssh_target "$instance_id"); then
-        echo "[WARNUNG] Kein SSH-Ziel fuer $label verfuegbar. Kopie wird uebersprungen."
-        return 1
-    fi
+    while (( attempt <= RETRY_COUNT )); do
+        log "[$label] Versuch $attempt/$RETRY_COUNT"
 
-    if [[ ! -f "$SSH_KEY" ]]; then
-        echo "[WARNUNG] SSH-Key nicht gefunden: $SSH_KEY"
-        return 1
-    fi
-
-    ssh_opts=(
-        -i "$SSH_KEY"
-        -o IdentitiesOnly=yes
-        -o PreferredAuthentications=publickey
-        -o PubkeyAuthentication=yes
-        -o PasswordAuthentication=no
-        -o KbdInteractiveAuthentication=no
-        -o ChallengeResponseAuthentication=no
-        -o BatchMode=yes
-        -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
-        -o StrictHostKeyChecking=accept-new
-    )
-
-    # FIX: Prüfe ob Remote-Datei existiert, bevor Retry-Schleife startet
-    echo "[INFO] Pruefe ob Remote-Datei existiert: $remote_path"
-    if ! remote_file_exists "$ssh_host" "$ssh_port" "$remote_path" "${ssh_opts[@]}"; then
-        echo "[WARNUNG] Remote-Datei existiert nicht oder SSH nicht erreichbar: $remote_path"
-        echo "[HINWEIS] Provisionierung evtl. noch nicht abgeschlossen."
-        return 1
-    fi
-    echo "[INFO] Remote-Datei bestaetigt. Starte Kopierversuche..."
-
-    while (( attempt <= max_attempts )); do
-        echo "[INFO] Kopierversuch $attempt/$max_attempts fuer $label..."
-        rm -f -- "$local_path"
-
-        if scp -B "${ssh_opts[@]}" -P "$ssh_port" "${SSH_USER}@${ssh_host}:${remote_path}" "$local_path" >>"$COPY_LOG_FILE" 2>&1; then
-            if [[ -s "$local_path" ]]; then
-                echo "[INFO] $label erfolgreich lokal gesichert: $local_path"
-                return 0
-            fi
-            echo "[WARNUNG] $label wurde ohne Inhalt kopiert. Neuer Versuch..."
+        if ! instance_exists "$instance_id"; then
+            warn "[$label] Instanz $instance_id ist via vastai aktuell nicht abfragbar."
         else
-            echo "[WARNUNG] SCP-Kopierversuch fuer $label fehlgeschlagen. Versuche Fallback per SSH/cat..."
-            rm -f -- "$local_path"
-            if ssh "${ssh_opts[@]}" -p "$ssh_port" "${SSH_USER}@${ssh_host}" "cat '$remote_path'" >"$local_path" 2>>"$COPY_LOG_FILE"; then
-                if [[ -s "$local_path" ]]; then
-                    echo "[INFO] $label erfolgreich via SSH/cat lokal gesichert: $local_path"
-                    return 0
+            if remote_file_exists_via_vast "$instance_id" "$remote_path"; then
+                exists_state="present"
+                log "[$label] Remote-Datei vorhanden: $remote_path"
+                rm -f -- "$local_path"
+
+                if vastai copy "${instance_id}:${remote_path}" "local:${local_path}" >>"$COPY_LOG_FILE" 2>&1; then
+                    if [[ -s "$local_path" ]]; then
+                        log "[$label] Erfolgreich lokal gesichert: $local_path"
+                        return 0
+                    fi
+                    warn "[$label] vastai copy erfolgreich, aber lokale Datei leer oder fehlt."
+                else
+                    warn "[$label] vastai copy fehlgeschlagen."
                 fi
-                echo "[WARNUNG] $label wurde via SSH/cat ohne Inhalt geliefert. Neuer Versuch..."
             else
-                echo "[WARNUNG] Fallback per SSH/cat fuer $label ebenfalls fehlgeschlagen. Neuer Versuch..."
+                exists_state="missing"
+                warn "[$label] Remote-Datei noch nicht vorhanden: $remote_path"
             fi
         fi
 
         attempt=$((attempt + 1))
-        sleep 3
+        if (( attempt <= RETRY_COUNT )); then
+            sleep "$RETRY_DELAY"
+        fi
     done
 
-    echo "[WARNUNG] $label konnte nicht kopiert werden."
+    if [[ "$exists_state" == "missing" ]]; then
+        warn "[$label] Datei wurde innerhalb des Retry-Fensters nicht gefunden: $remote_path"
+    else
+        warn "[$label] Datei konnte nicht kopiert werden, obwohl Instanz/CLI zeitweise erreichbar war."
+    fi
+
     if [[ -f "$COPY_LOG_FILE" ]]; then
-        echo "[DEBUG] SSH/SCP-Log:"
+        echo "[DEBUG] vastai copy Log (letzte 20 Zeilen):"
         tail -n 20 "$COPY_LOG_FILE" || true
     fi
+
     return 1
 }
 
-# 1. Validierung: Prüfen, ob eine aktive Instanz registriert ist
+destroy_instance() {
+    local instance_id="$1"
+    log "Zerstoere Vast.ai-Instanz $instance_id zur Kostenvermeidung..."
+    printf 'y\n' | vastai destroy instance "$instance_id"
+}
+
 if [[ ! -f "$STATE_FILE" ]]; then
     c "[FEHLER] Keine aktive Zustandsdatei gefunden ($STATE_FILE)."
-    echo "Es ist aktuell keine Instanz im System registriert oder der Cleanup wurde bereits ausgeführt."
+    echo "Es ist aktuell keine Instanz registriert oder der Cleanup wurde bereits ausgefuehrt."
     exit 1
 fi
 
-# Atomares Auslesen der Instance-ID
-INSTANCE_ID=$(cat "$STATE_FILE")
+require_cmd vastai
+require_cmd python3
+
+INSTANCE_ID="$(cat "$STATE_FILE")"
 
 echo "========================================================================================="
-echo "Starte automatisierten Cleanup für Instanz-ID: $INSTANCE_ID"
+echo "Starte automatisierten Cleanup fuer Instanz-ID: $INSTANCE_ID"
 echo "========================================================================================="
 
 echo "Hole Telemetriedaten von Instanz $INSTANCE_ID vor dem Destroy..."
@@ -246,27 +150,21 @@ echo "Hole Telemetriedaten von Instanz $INSTANCE_ID vor dem Destroy..."
 TELEMETRY_AVAILABLE=0
 NET_TIME_AVAILABLE=0
 
-# 2. Defensiver Pull über nicht-interaktives SSH/SCP statt vastai copy
 if copy_from_instance_with_retry "$INSTANCE_ID" "$REMOTE_TELEMETRY_FILE" "$TELEMETRY_FILE" "Telemetriedaten"; then
     TELEMETRY_AVAILABLE=1
 else
-    echo "[WARNUNG] Telemetriedaten konnten nicht kopiert werden (Instanz evtl. nicht bereit, SSH nicht verfuegbar oder Datei fehlt)."
+    warn "Telemetriedaten konnten nicht kopiert werden."
 fi
 
 if copy_from_instance_with_retry "$INSTANCE_ID" "$REMOTE_NET_TIME_FILE" "$NET_TIME_FILE" "Netto-Laufzeitdatei"; then
     NET_TIME_AVAILABLE=1
 else
-    echo "[WARNUNG] Netto-Laufzeitdatei konnte nicht kopiert werden."
+    warn "Netto-Laufzeitdatei konnte nicht kopiert werden."
 fi
 
-# 3. Instanz zerstören (Garantierte Kostenvermeidung)
-echo "Zerstöre Vast.ai-Instanz $INSTANCE_ID zur Kostenvermeidung..."
-printf 'y\n' | vastai destroy instance "$INSTANCE_ID"
+destroy_instance "$INSTANCE_ID"
 
-# 4. Parameter-Optimierung und Format-Sanitizing lokal ausführen
 if [[ "$TELEMETRY_AVAILABLE" -eq 1 && -f "$TELEMETRY_FILE" ]]; then
-
-    # FIX: Nur vorhandene Dateien sanitieren, kein Abbruch bei fehlendem PARAMS_FILE
     echo "[PROZESS] Sanitiere Zeilenenden (CRLF -> LF) fuer JSON-Infrastruktur..."
     for f in "$PARAMS_FILE" "$TELEMETRY_FILE"; do
         [[ -f "$f" ]] && sed -i 's/\r$//' "$f"
@@ -276,17 +174,13 @@ if [[ "$TELEMETRY_AVAILABLE" -eq 1 && -f "$TELEMETRY_FILE" ]]; then
     python3 ./optimizer.py --telemetry "$TELEMETRY_FILE" --params "$PARAMS_FILE" --alpha 0.25
     rm -f "$TELEMETRY_FILE"
 else
-    # Falls das Telemetrie-File fehlt, zumindest die params.json vorsorglich bereinigen
-    if [[ -f "$PARAMS_FILE" ]]; then
-        sed -i 's/\r$//' "$PARAMS_FILE"
-    fi
-    echo "[INFO] Überspringe Optimierungsphase, da keine Telemetriedaten vorliegen."
+    [[ -f "$PARAMS_FILE" ]] && sed -i 's/\r$//' "$PARAMS_FILE"
+    echo "[INFO] Ueberspringe Optimierungsphase, da keine Telemetriedaten vorliegen."
 fi
 
 if [[ "$NET_TIME_AVAILABLE" -eq 1 && -f "$NET_TIME_FILE" ]]; then
     echo "[INFO] Netto-Laufzeitdatei gesichert: $NET_TIME_FILE"
 fi
 
-# 5. Zurücksetzen des Systemzustands
 rm -f "$STATE_FILE"
 echo "[SUCCESS] System erfolgreich bereinigt. Zustandsdatei entfernt."
