@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# cleanup-and-optimize.sh | Version: 2026-06-02.01
+# cleanup-and-optimize.sh | Version: 2026-06-02.02
 # Gehaertet:
 # - vastai execute statt direktem SSH fuer Dateipruefung
 # - vastai copy statt scp fuer Telemetrie-Download
