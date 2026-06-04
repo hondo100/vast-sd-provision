@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.03
+# find-cheapest-instance.sh | Version: 2026-06-04.04
 # =============================================================================
 #
 # ZWECK
@@ -95,7 +95,7 @@
 #
 # --test
 #   Ueberspringt die echte Vast-Suche und arbeitet mit leerer/extern
-#   vorbereiteter Testdatenbasis. Nützlich fuer Parser- und Format-Tests.
+#   vorbereiteter Testdatenbasis. Nuetzlich fuer Parser- und Format-Tests.
 #
 # --dry-run
 #   Simuliert die Buchung, fuehrt aber kein "create instance" aus.
@@ -142,7 +142,7 @@
 export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 
-VERSION="${VERSION:-2026-06-04.03}"
+VERSION="${VERSION:-2026-06-04.04}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -190,11 +190,20 @@ validate_template_hash() {
     [[ "$VALIDATE_TEMPLATE_HASH" == "1" ]] || return 0
     [[ -n "$TEMPLATE_HASH" ]] || die "TEMPLATE_HASH ist leer."
 
-    local out
+    local query=""
+    local out=""
+    local rc=0
+
     if [[ "$TEMPLATE_QUERY_MODE" == "hash_id" ]]; then
-        out="$(vast_cmd search templates --raw "hash_id='$TEMPLATE_HASH'" 2>/dev/null || true)"
+        query="hash_id=='$TEMPLATE_HASH'"
     else
-        out="$(vast_cmd search templates --raw "$TEMPLATE_HASH" 2>/dev/null || true)"
+        query="$TEMPLATE_HASH"
+    fi
+
+    out="$(vast_cmd search templates --raw "$query" 2>&1)" || rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        die "Template-Suche fehlgeschlagen. Query: $query | Ausgabe: $out"
     fi
 
     if [[ -z "$out" || "$out" == "[]" ]]; then
