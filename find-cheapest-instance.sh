@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.05
+# find-cheapest-instance.sh | Version: 2026-06-04.06
 # =============================================================================
 #
 # ZWECK
@@ -59,7 +59,8 @@
 # - optionale weiche Validierung des Template-Hashs vor der Buchung;
 # - defensive Behandlung leerer oder fehlerhafter Suchergebnisse;
 # - robustere Extraktion der neu erzeugten Instanz-ID aus CLI-Ausgaben;
-# - saubere Trennung von Suchphase, Bewertungsphase und Buchungsphase.
+# - saubere Trennung von Suchphase, Bewertungsphase und Buchungsphase;
+# - sicherer EXIT-Trap auch bei set -u / nounset.
 #
 # DATEIEN
 # -------
@@ -150,6 +151,7 @@
 # 7. Tabellenansicht erzeugen und Top-Angebote markieren.
 # 8. Optional weiche Template-Pruefung ausfuehren.
 # 9. Optional Buchung ausfuehren und neue Instanz-ID sichern.
+# 10. Temp-Dateien robust bereinigen.
 #
 # BEISPIELE
 # ---------
@@ -173,7 +175,7 @@
 export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 
-VERSION="${VERSION:-2026-06-04.05}"
+VERSION="${VERSION:-2026-06-04.06}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -185,6 +187,8 @@ PARAMS_JSON="${PARAMS_JSON:-./params.json}"
 STATE_FILE="${STATE_FILE:-/home/werner/github-scripts/.current_instance}"
 VALIDATE_TEMPLATE_HASH="${VALIDATE_TEMPLATE_HASH:-1}"
 TEMPLATE_QUERY_MODE="${TEMPLATE_QUERY_MODE:-hash_id}"
+
+tmp_json=""
 
 c() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
 log() { printf '[INFO] %s\n' "$*"; }
@@ -266,7 +270,6 @@ main() {
     local BOOK_INDEX=""
     local TEST_MODE=0
     local DRY_RUN=0
-    local tmp_json=""
     local parsed=""
     local line=""
     local raw_line=""
@@ -308,7 +311,7 @@ main() {
     echo "========================================================================================="
 
     tmp_json="$(mktemp /tmp/vast_offers.XXXXXX.json)"
-    trap 'rm -f "$tmp_json"' EXIT
+    trap 'rm -f -- "${tmp_json:-}"' EXIT
 
     if [[ "$TEST_MODE" -ne 1 ]]; then
         log "Lade Angebotsdaten via Vast.ai..."
