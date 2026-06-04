@@ -1,163 +1,411 @@
 #!/usr/bin/env bash
-# -----------------------------------------------------------------------------
-# find-cheapest-instance.sh | Version: 2026-06-02.01 (Multi-Format Engine)
-# Patch:
-# - China wird hart per Vast-Query ausgeschlossen: geolocation notin [CN]
-# - Heuristik-Filter: Zeilen mit Geo="," werden lokal verworfen
-# -----------------------------------------------------------------------------
-export PATH=$PATH:~/.local/bin:/usr/local/bin:/usr/bin
-set -eEuo pipefail
+# =============================================================================
+# find-cheapest-instance.sh | Version: 2026-06-04.03
+# =============================================================================
+#
+# ZWECK
+# -----
+# Dieses Script sucht ueber die Vast.ai CLI nach guenstigen, fuer den eigenen
+# Workflow geeigneten GPU-Angeboten, bewertet sie ueber eine externe
+# scoring_engine.py, zeigt die bestplatzierten Ergebnisse tabellarisch an und
+# kann optional direkt eine Instanz buchen.
+#
+# Das Script ist fuer einen Ablauf ausgelegt, bei dem:
+# 1. ein Rohsuchlauf ueber Vast.ai erfolgt,
+# 2. die Rohdaten an scoring_engine.py uebergeben werden,
+# 3. die besten Treffer formatiert angezeigt werden,
+# 4. optional eine Instanz mit einem bekannten Template-Hash gebucht wird,
+# 5. die neu erzeugte Instanz-ID lokal gespeichert wird.
+#
+# WICHTIG ZUM TEMPLATE
+# --------------------
+# Fuer die Buchung ist kein Template-Name erforderlich. Vast.ai unterstuetzt
+# die Erstellung einer Instanz direkt ueber einen Template-Hash
+# (--template_hash / hash_id). Das Template liefert die benoetigten Default-
+# Werte, sodass kein menschenlesbarer Name bekannt sein muss.
+#
+# ROBUSTHEIT
+# ----------
+# Diese Version verbessert gegenueber einer einfacheren Fassung vor allem:
+# - sichere Temp-Dateien statt fester /tmp-Pfade;
+# - Vorab-Pruefung von CLI und Authentifizierung;
+# - optionale Validierung des Template-Hashs vor der Buchung;
+# - defensive Behandlung leerer oder fehlerhafter Suchergebnisse;
+# - robustere Extraktion der neu erzeugten Instanz-ID aus CLI-Ausgaben;
+# - saubere Trennung von Suchphase, Bewertungsphase und Buchungsphase.
+#
+# DATEIEN
+# -------
+# Standardmaessig werden diese lokalen Dateien verwendet:
+# - PARAMS_JSON: Eingabe fuer scoring_engine.py
+# - STATE_FILE:  Ziel fuer die gebuchte Instanz-ID
+#
+# Externe lokale Dateien:
+# - ./scoring_engine.py muss vorhanden und ausfuehrbar via python3 sein
+# - ./params.json sollte vorhanden sein, sofern scoring_engine.py dies erwartet
+#
+# STEUERUNGSVARIABLEN
+# -------------------
+# Diese Variablen koennen direkt im Script oder per Environment angepasst
+# werden.
+#
+# Suche und Anzeige:
+# - VERSION
+#   Script-Version fuer Logging.
+#
+# - RESULTS
+#   Maximale Anzahl ausgegebener Treffer.
+#
+# - QUERY
+#   Vast.ai Suchquery fuer offers. Diese Query wird direkt an
+#   "vastai search offers" uebergeben.
+#
+# - GPU_FILTER
+#   Regex-Filter, der an scoring_engine.py durchgereicht wird.
+#
+# - MODEL_GB
+#   Geschaetzte Modellgroesse in GiB fuer die Bewertung.
+#
+# - SESSION_HOURS
+#   Erwartete Laufzeit der Session in Stunden fuer die Bewertung.
+#
+# - PARAMS_JSON
+#   Parameterdatei fuer scoring_engine.py.
+#
+# Buchung:
+# - TEMPLATE_HASH
+#   Hash-ID des zu verwendenden Vast.ai Templates.
+#
+# - DISK_GB
+#   Gewuenschte Disk-Groesse fuer die Instanz.
+#
+# - STATE_FILE
+#   Datei, in die die neue Instanz-ID geschrieben wird.
+#
+# - VALIDATE_TEMPLATE_HASH
+#   1 = Template-Hash vor Buchung via "search templates" pruefen.
+#   0 = keine Vorab-Pruefung.
+#
+# - TEMPLATE_QUERY_MODE
+#   Art der Hash-Pruefung. Standard ist ein einfacher Query-Ausdruck mit hash_id.
+#
+# MODI UND ARGUMENTE
+# ------------------
+# Das Script kennt diese Optionen:
+#
+# --test
+#   Ueberspringt die echte Vast-Suche und arbeitet mit leerer/extern
+#   vorbereiteter Testdatenbasis. Nützlich fuer Parser- und Format-Tests.
+#
+# --dry-run
+#   Simuliert die Buchung, fuehrt aber kein "create instance" aus.
+#
+# --book [NUM]
+#   Startet den Buchungsfluss. Wenn NUM angegeben ist, wird direkt der
+#   entsprechende Listenplatz verwendet; sonst erfolgt eine Rueckfrage.
+#
+# HEURISTIKEN
+# -----------
+# - China wird bereits in der Vast-Query ausgeschlossen:
+#     geolocation notin [CN]
+# - Zusaetzlich werden lokal Zeilen verworfen, deren Geo-Feld nur aus ","
+#   besteht, da solche Faelle in der Praxis als unbrauchbare/inkonsistente
+#   Geo-Daten behandelt werden.
+#
+# ABLAUF
+# ------
+# 1. CLI und Python pruefen.
+# 2. Vast-Authentifizierung per "show user" testen.
+# 3. scoring_engine.py und params.json pruefen.
+# 4. Angebotsdaten via "search offers --raw" laden.
+# 5. Rohdaten an scoring_engine.py uebergeben.
+# 6. Ergebniszeilen lokal nach Geo-Heuristik filtern.
+# 7. Tabellenansicht erzeugen und Top-Angebote markieren.
+# 8. Optional Buchung ausfuehren und neue Instanz-ID sichern.
+#
+# BEISPIELE
+# ---------
+# Nur Suche und Anzeige:
+#   bash find-cheapest-instance.sh
+#
+# Buchungsdialog starten:
+#   bash find-cheapest-instance.sh --book
+#
+# Direkt Platz 2 buchen:
+#   bash find-cheapest-instance.sh --book 2
+#
+# Buchung nur simulieren:
+#   bash find-cheapest-instance.sh --book 1 --dry-run
+#
+# =============================================================================
 
-VERSION="2026-06-02.01"
-RESULTS=10
-QUERY='external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]'
-GPU_FILTER='RTX (3090|4090|A5000|A6000|5000|6000)'
-DISK_GB=15
-TEMPLATE_HASH="ad0935fab3e1f781fa442c1604ed07e2"
-MODEL_GB=20
-SESSION_HOURS=3
-PARAMS_JSON="./params.json"
-STATE_FILE="/home/werner/github-scripts/.current_instance"
+export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
+set -Eeuo pipefail
+
+VERSION="${VERSION:-2026-06-04.03}"
+RESULTS="${RESULTS:-10}"
+QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
+GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
+DISK_GB="${DISK_GB:-15}"
+TEMPLATE_HASH="${TEMPLATE_HASH:-ad0935fab3e1f781fa442c1604ed07e2}"
+MODEL_GB="${MODEL_GB:-20}"
+SESSION_HOURS="${SESSION_HOURS:-3}"
+PARAMS_JSON="${PARAMS_JSON:-./params.json}"
+STATE_FILE="${STATE_FILE:-/home/werner/github-scripts/.current_instance}"
+VALIDATE_TEMPLATE_HASH="${VALIDATE_TEMPLATE_HASH:-1}"
+TEMPLATE_QUERY_MODE="${TEMPLATE_QUERY_MODE:-hash_id}"
 
 c() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
+log() { printf '[INFO] %s\n' "$*"; }
+warn() { printf '[WARNUNG] %s\n' "$*" >&2; }
+ok() { printf '[SUCCESS] %s\n' "$*"; }
+die() { printf '[FEHLER] %s\n' "$*" >&2; exit 1; }
 
 vast_cmd() {
-    if command -v vastai >/dev/null 2>&1; then vastai "$@"
-    elif command -v vast >/dev/null 2>&1; then vast "$@"
-    else echo "[ERROR] 'vastai' CLI nicht gefunden."; exit 1; fi
+    if command -v vastai >/dev/null 2>&1; then
+        vastai "$@"
+    elif command -v vast >/dev/null 2>&1; then
+        vast "$@"
+    else
+        die "'vastai' CLI nicht gefunden."
+    fi
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "Benoetigter Befehl fehlt: $1"
+}
+
+check_auth() {
+    vast_cmd show user >/dev/null 2>&1 || die "Vast.ai CLI ist nicht authentifiziert oder aktuell nicht erreichbar."
+    ok "Vast.ai CLI/Auth-Pruefung erfolgreich."
+}
+
+ensure_inputs() {
+    [[ -f "./scoring_engine.py" ]] || die "scoring_engine.py nicht gefunden."
+    [[ -f "$PARAMS_JSON" ]] || die "Parameterdatei nicht gefunden: $PARAMS_JSON"
+    ok "Lokale Eingabedateien vorhanden."
+}
+
+validate_template_hash() {
+    [[ "$VALIDATE_TEMPLATE_HASH" == "1" ]] || return 0
+    [[ -n "$TEMPLATE_HASH" ]] || die "TEMPLATE_HASH ist leer."
+
+    local out
+    if [[ "$TEMPLATE_QUERY_MODE" == "hash_id" ]]; then
+        out="$(vast_cmd search templates --raw "hash_id='$TEMPLATE_HASH'" 2>/dev/null || true)"
+    else
+        out="$(vast_cmd search templates --raw "$TEMPLATE_HASH" 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$out" || "$out" == "[]" ]]; then
+        die "Template-Hash konnte nicht validiert werden: $TEMPLATE_HASH"
+    fi
+
+    ok "Template-Hash validiert: $TEMPLATE_HASH"
+}
+
+extract_new_contract_id() {
+    local text="$1"
+    local extracted=""
+
+    if command -v grep >/dev/null 2>&1; then
+        extracted="$(printf '%s\n' "$text" | grep -oP "(contract #|'new_contract':\s*|\"new_contract\":\s*)\K\d+" | head -n1 || true)"
+    fi
+
+    if [[ -z "$extracted" ]]; then
+        extracted="$(printf '%s\n' "$text" | sed -n -E "s/.*(contract #|'new_contract':[[:space:]]*|\"new_contract\":[[:space:]]*)([0-9]+).*/\2/p" | head -n1)"
+    fi
+
+    printf '%s' "$extracted"
 }
 
 main() {
-  local DO_BOOK=0; local BOOK_INDEX=""; local TEST_MODE=0; local DRY_RUN=0
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --test) TEST_MODE=1 ;;
-      --dry-run) DRY_RUN=1 ;;
-      --book) DO_BOOK=1; [[ $# -gt 1 && "$2" =~ ^[0-9]+$ ]] && BOOK_INDEX="$2" && shift ;;
-      *) echo "Usage: $0 [--test] [--dry-run] [--book [NUM]]"; exit 1 ;;
-    esac
-    shift
-  done
+    local DO_BOOK=0
+    local BOOK_INDEX=""
+    local TEST_MODE=0
+    local DRY_RUN=0
+    local tmp_json=""
+    local parsed=""
+    local line=""
+    local raw_line=""
+    local geo_field=""
+    local i=0
+    local cheapest_idx=-1
+    local min_test="999999999"
+    local j=0
 
-  echo "========================================================================================="
-  echo "Skript-Version: $VERSION | Filter: $GPU_FILTER"
-  echo "Query: $QUERY"
-  echo "Modus: Entkoppelte Inferenz mit automatisierter Status-Erfassung"
-  echo "========================================================================================="
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --test) TEST_MODE=1 ;;
+            --dry-run) DRY_RUN=1 ;;
+            --book)
+                DO_BOOK=1
+                if [[ $# -gt 1 && "${2:-}" =~ ^[0-9]+$ ]]; then
+                    BOOK_INDEX="$2"
+                    shift
+                fi
+                ;;
+            *)
+                echo "Usage: $0 [--test] [--dry-run] [--book [NUM]]"
+                exit 1
+                ;;
+        esac
+        shift
+    done
 
-  # Datenbeschaffung
-  if [[ "$TEST_MODE" -ne 1 ]]; then
-      vast_cmd search offers --raw "$QUERY" -o 'dlperf_usd-' --limit 120 > /tmp/vast_data.json
-  else
-      touch /tmp/vast_data.json
-  fi
+    require_cmd python3
+    require_cmd mktemp
+    check_auth
+    ensure_inputs
 
-  # Stream-Verarbeitung über Standard-Unix-Pipe
-  local parsed
-  parsed="$(cat /tmp/vast_data.json | python3 ./scoring_engine.py \
-      --gpu_filter "$GPU_FILTER" \
-      --model_gb "$MODEL_GB" \
-      --session_hours "$SESSION_HOURS" \
-      --params "$PARAMS_JSON")"
+    echo "========================================================================================="
+    echo "Skript-Version: $VERSION | Filter: $GPU_FILTER"
+    echo "Query: $QUERY"
+    echo "Modus: Entkoppelte Inferenz mit automatisierter Status-Erfassung"
+    echo "Template-Hash: $TEMPLATE_HASH"
+    echo "========================================================================================="
 
-  # Tabellenkopf
-  printf "%-5s %-12s %-16s %-5s %-7s %-7s %-8s %-7s %-6s %-5s %-6s %-4s %-6s\n" "Nr" "ID" "Model" "GPUs" "$/hr" "Init$" "Eff$/h" "DLMB/s" "Ready" "VRAM" "DskBW" "Geo" "Score"
-  printf '%s\n' "-----------------------------------------------------------------------------------------------------------------"
+    tmp_json="$(mktemp /tmp/vast_offers.XXXXXX.json)"
+    trap 'rm -f "$tmp_json"' EXIT
 
-  local i=0; local rows=(); local cheapest_idx=-1; local min_test=999999
-
-  mapfile -t lines <<< "$parsed"
-
-  # Zusatzfilter: Geo-Feld mit nur "," verwerfen
-  local filtered_lines=()
-  local raw_line geo_field
-  for raw_line in "${lines[@]}"; do
-    [[ -z "${raw_line}" ]] && continue
-    IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ geo_field _ <<< "$raw_line"
-
-    if [[ "$geo_field" =~ ^[[:space:]]*,[[:space:]]*$ ]]; then
-      echo "[INFO] Filtere Angebot mit Geo=',' heraus (China-Heuristik)."
-      continue
+    if [[ "$TEST_MODE" -ne 1 ]]; then
+        log "Lade Angebotsdaten via Vast.ai..."
+        vast_cmd search offers --raw "$QUERY" -o 'dlperf_usd-' --limit 120 > "$tmp_json"
+    else
+        log "TEST_MODE=1, verwende leere Testdatenbasis."
+        : > "$tmp_json"
     fi
 
-    filtered_lines+=("$raw_line")
-  done
+    log "Bewerte Angebote via scoring_engine.py..."
+    parsed="$(python3 ./scoring_engine.py \
+        --gpu_filter "$GPU_FILTER" \
+        --model_gb "$MODEL_GB" \
+        --session_hours "$SESSION_HOURS" \
+        --params "$PARAMS_JSON" < "$tmp_json")"
 
-  lines=("${filtered_lines[@]}")
+    mapfile -t lines <<< "$parsed"
 
-  # Erster Durchlauf: Günstigste Instanz für Test-Kosten ermitteln
-  for j in "${!lines[@]}"; do
-    [[ $j -ge $RESULTS ]] && break
-    [[ -z "${lines[$j]}" ]] && continue
-    IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ _ test_c <<< "${lines[$j]}"
-    if (( $(echo "$test_c < $min_test" | bc -l) )); then
-        min_test=$test_c
-        cheapest_idx=$j
-    fi
-  done
+    local filtered_lines=()
+    for raw_line in "${lines[@]}"; do
+        [[ -z "$raw_line" ]] && continue
+        IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ geo_field _ <<< "$raw_line"
 
-  # Zweiter Durchlauf: Formatierte und farbkodierte Ausgabe
-  for j in "${!lines[@]}"; do
-    [[ $j -ge $RESULTS ]] && break
-    [[ -z "${lines[$j]}" ]] && continue
-    IFS=$'\t' read -r id model ngpu dph init eff dl ready vram dbw geo score test_c <<< "${lines[$j]}"
-
-    line=$(printf "%-5d %-12s %-16s %-5s %-7.2f %-7.2f %-8.2f %-7.0f %-6.0f %-5.0f %-6.0f %-4s %-6.2f" "$((j+1))" "$id" "$model" "$ngpu" "$dph" "$init" "$eff" "$dl" "$ready" "$vram" "$dbw" "$geo" "$score")
-
-    if [ "$j" -eq 0 ] && [ "$j" -eq "$cheapest_idx" ]; then c 36 "$line (Top & Best Test)"
-    elif [ "$j" -eq 0 ]; then c 32 "$line (Top Score)"
-    elif [ "$j" -eq "$cheapest_idx" ]; then c 33 "$line (Best Test)"
-    else printf '%s\n' "$line"; fi
-    rows+=("$id|$model")
-  done
-
-  if [[ ${#rows[@]} -eq 0 ]]; then
-    echo "[WARNUNG] Keine passenden nicht-chinesischen Instanzen nach Filterung gefunden."
-    exit 2
-  fi
-
-  # Interaktive Buchungslogik
-  if [[ "$DO_BOOK" -eq 1 ]]; then
-    if [[ -z "$BOOK_INDEX" ]]; then
-        echo ""
-        read -p "Nr zur Buchung (oder 'q' zum Beenden): " BOOK_INDEX
-    fi
-    [[ "$BOOK_INDEX" == "q" ]] && { echo "Abbruch."; exit 0; }
-    [[ "$DRY_RUN" -eq 1 ]] && { echo "[DRY-RUN] Instanz $BOOK_INDEX wäre gebucht."; exit 0; }
-
-    local idx=$((BOOK_INDEX-1))
-    if [[ $idx -lt 0 || $idx -ge ${#rows[@]} ]]; then
-        echo "[FEHLER] Ungültige Auswahl."
-        exit 1
-    fi
-
-    local sel="${rows[$idx]}"
-    local target_id="${sel%|*}"
-    read -p "Buchung $target_id (${sel#*|}) bestätigen [y/N]: " conf
-    if [[ "$conf" == [yY] ]]; then
-        echo "[PROZESS] Sende Buchungsbefehl an Vast.ai..."
-
-        local book_output
-        book_output=$(vast_cmd create instance "$target_id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" 2>&1)
-        echo "$book_output"
-
-        local extracted_id=""
-        if command -v grep >/dev/null 2>&1; then
-            extracted_id=$(echo "$book_output" | grep -oP "(contract #|'new_contract':\s*|\"new_contract\":\s*)\K\d+" || true)
+        if [[ "$geo_field" =~ ^[[:space:]]*,[[:space:]]*$ ]]; then
+            log "Filtere Angebot mit Geo=',' heraus (China-Heuristik)."
+            continue
         fi
 
-        if [[ -z "$extracted_id" ]]; then
-            extracted_id=$(echo "$book_output" | sed -n -E "s/.*(contract #|'new_contract':[[:space:]]*|\"new_contract\":[[:space:]]*)([0-9]+).*/\2/p")
-        fi
+        filtered_lines+=("$raw_line")
+    done
 
-        if [[ -n "$extracted_id" ]]; then
-            echo "$extracted_id" > "$STATE_FILE"
-            echo "[INFO] Instanz-ID $extracted_id wurde vollautomatisch in $STATE_FILE gesichert."
+    lines=("${filtered_lines[@]}")
+
+    if [[ ${#lines[@]} -eq 0 ]]; then
+        warn "Keine passenden nicht-chinesischen Instanzen nach Filterung gefunden."
+        exit 2
+    fi
+
+    printf "%-5s %-12s %-16s %-5s %-7s %-7s %-8s %-7s %-6s %-5s %-6s %-4s %-6s\n" \
+        "Nr" "ID" "Model" "GPUs" "$/hr" "Init$" "Eff$/h" "DLMB/s" "Ready" "VRAM" "DskBW" "Geo" "Score"
+    printf '%s\n' "-----------------------------------------------------------------------------------------------------------------"
+
+    local rows=()
+
+    for j in "${!lines[@]}"; do
+        [[ $j -ge $RESULTS ]] && break
+        [[ -z "${lines[$j]}" ]] && continue
+
+        local test_c=""
+        IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ _ test_c <<< "${lines[$j]}"
+
+        if python3 - "$test_c" "$min_test" <<'PY'
+import sys
+a=float(sys.argv[1]); b=float(sys.argv[2])
+raise SystemExit(0 if a < b else 1)
+PY
+        then
+            min_test="$test_c"
+            cheapest_idx="$j"
+        fi
+    done
+
+    for j in "${!lines[@]}"; do
+        [[ $j -ge $RESULTS ]] && break
+        [[ -z "${lines[$j]}" ]] && continue
+
+        local id="" model="" ngpu="" dph="" init="" eff="" dl="" ready="" vram="" dbw="" geo="" score="" test_c=""
+        IFS=$'\t' read -r id model ngpu dph init eff dl ready vram dbw geo score test_c <<< "${lines[$j]}"
+
+        line="$(printf "%-5d %-12s %-16s %-5s %-7.2f %-7.2f %-8.2f %-7.0f %-6.0f %-5.0f %-6.0f %-4s %-6.2f" \
+            "$((j+1))" "$id" "$model" "$ngpu" "$dph" "$init" "$eff" "$dl" "$ready" "$vram" "$dbw" "$geo" "$score")"
+
+        if [[ "$j" -eq 0 && "$j" -eq "$cheapest_idx" ]]; then
+            c 36 "$line (Top & Best Test)"
+        elif [[ "$j" -eq 0 ]]; then
+            c 32 "$line (Top Score)"
+        elif [[ "$j" -eq "$cheapest_idx" ]]; then
+            c 33 "$line (Best Test)"
         else
-            echo "[WARNUNG] Instanz wurde gestartet, aber die ID-Extraktion schlug fehl."
-            echo "Bitte prüfen Sie den Zustand manuell via 'vastai show instances-v1'."
+            printf '%s\n' "$line"
+        fi
+
+        rows+=("$id|$model")
+        i=$((i + 1))
+    done
+
+    if [[ ${#rows[@]} -eq 0 ]]; then
+        warn "Keine darstellbaren Angebote vorhanden."
+        exit 2
+    fi
+
+    if [[ "$DO_BOOK" -eq 1 ]]; then
+        validate_template_hash
+
+        if [[ -z "$BOOK_INDEX" ]]; then
+            echo ""
+            read -r -p "Nr zur Buchung (oder 'q' zum Beenden): " BOOK_INDEX
+        fi
+
+        [[ "$BOOK_INDEX" == "q" ]] && { echo "Abbruch."; exit 0; }
+        [[ "$BOOK_INDEX" =~ ^[0-9]+$ ]] || die "Ungueltige Auswahl: $BOOK_INDEX"
+
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            echo "[DRY-RUN] Instanz $BOOK_INDEX waere gebucht worden."
+            exit 0
+        fi
+
+        local idx=$((BOOK_INDEX - 1))
+        if [[ $idx -lt 0 || $idx -ge ${#rows[@]} ]]; then
+            die "Ungueltige Auswahl."
+        fi
+
+        local sel="${rows[$idx]}"
+        local target_id="${sel%|*}"
+
+        read -r -p "Buchung $target_id (${sel#*|}) mit Template $TEMPLATE_HASH bestaetigen [y/N]: " conf
+        if [[ "$conf" == [yY] ]]; then
+            echo "[PROZESS] Sende Buchungsbefehl an Vast.ai..."
+
+            local book_output=""
+            book_output="$(vast_cmd create instance "$target_id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" 2>&1 || true)"
+            echo "$book_output"
+
+            local extracted_id=""
+            extracted_id="$(extract_new_contract_id "$book_output")"
+
+            if [[ -n "$extracted_id" ]]; then
+                mkdir -p "$(dirname "$STATE_FILE")"
+                echo "$extracted_id" > "$STATE_FILE"
+                ok "Instanz-ID $extracted_id wurde in $STATE_FILE gesichert."
+            else
+                warn "Instanz wurde moeglicherweise gestartet, aber die ID-Extraktion schlug fehl."
+                warn "Bitte pruefen Sie den Zustand manuell via 'vastai show instances'."
+                exit 1
+            fi
+        else
+            echo "Abbruch."
         fi
     fi
-  fi
 }
+
 main "$@"
