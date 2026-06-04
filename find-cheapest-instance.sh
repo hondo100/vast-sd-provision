@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.15
+# find-cheapest-instance.sh | Version: 2026-06-04.16
 # =============================================================================
 #
 # ZWECK
@@ -12,29 +12,133 @@
 #
 # SCHWERPUNKT DIESER FASSUNG
 # -------------------------
-# Diese Version erzwingt die gewuenschte Disk-Groesse explizit im Create-Request
-# und haertet den Post-Check gegen Unterschiede in Vast-CLI-Ausgaben ab.
+# Diese Version ist auf robuste, reproduzierbare Vast-Buchungen ausgelegt:
 #
-# Wichtige Punkte:
-# - `--disk` wird standardmaessig explizit gesetzt.
-# - Template-Hash wird optional vorab validiert.
-# - Nach der Buchung wird die Instanzgroesse per CLI nachgeprueft.
+# - Die gewuenschte Disk-Groesse wird explizit im Create-Request gesetzt.
+# - US-Instanzen werden zusammen mit CN bereits in der Search-Query ausgeschlossen.
+# - Template-Hash wird optional vor der Buchung validiert.
+# - Nach der Buchung wird die reale Instanz nachgeprueft.
+# - Der Post-Check nutzt mehrere Fallbacks:
+#   1. `show instance <id> --raw`
+#   2. `show instances --raw`
+#   3. Tabellen-Fallback aus `show instances`
 # - Bei Parse-Problemen werden Debug-Dateien geschrieben.
-# - Hilfsfunktionen enden explizit mit `return 0`, damit `set -e` und `trap ERR`
-#   keine falschen Fehler ausloesen.
+# - Hilfsfunktionen enden explizit mit `return 0`, damit `set -e`/`trap ERR`
+#   nicht durch harmlose Tests ausgelöst werden.
 #
 # HINTERGRUND
 # -----------
-# Vast dokumentiert `create instance`, `show instance`, `show instances`,
-# `stop instance` und `destroy instance` als CLI-Kommandos fuer den kompletten
-# Instanz-Lebenszyklus. Die Disk-Groesse wird beim Erstellen festgelegt, daher
-# ist ein explizites `--disk` der zuverlaessigste Weg fuer reproduzierbare
-# Ergebnisse. [web:491][web:579][web:611]
+# Vast erlaubt die Instanzerstellung ueber `create instance`; explizite
+# Request-Parameter sind der zuverlaessigste Weg, um Werte wie die Disk-Groesse
+# sicher festzulegen. Da die Disk-Groesse bei der Erstellung festgelegt wird und
+# spaeter nicht einfach geaendert werden kann, erzwingt dieses Script `--disk`
+# standardmaessig direkt im Buchungsbefehl. [web:502][web:618]
 #
-# Bash-Funktionen geben den Status des letzten Kommandos zurueck. Wenn die
-# letzte Zeile nur ein fehlgeschlagener Test wie `[[ -n "$x" ]]` ist, liefert
-# die Funktion Exit-Code 1, was unter `set -e` als Fehler gilt. Diese Fassung
-# vermeidet genau das mit explizitem `return 0`. [web:650][web:651]
+# Die Vast-CLI nutzt fuer Instanzen in der Ausgabe das Feld `disk_space` fuer
+# die Storage-Spalte. Darum prueft der Post-Check gezielt auf mehrere moegliche
+# Storage-Felder und nutzt notfalls einen Tabellen-Fallback. [web:614][web:579]
+#
+# Bash gibt fuer Funktionen standardmaessig den Exit-Status des letzten
+# Kommandos zurueck. Unter `set -Eeuo pipefail` kann das bei rein optionalen
+# Tests unerwuenschte Abbrueche ausloesen. Deshalb enden Hilfsfunktionen hier
+# explizit mit `return 0`. [web:663][web:640]
+#
+# FUNKTIONSUEBERSICHT
+# ------------------
+# 1. Vast.ai CLI und lokale Dateien pruefen.
+# 2. Angebote per Vast.ai laden.
+# 3. Angebote mit scoring_engine.py bewerten.
+# 4. Ergebnisse filtern und tabellarisch darstellen.
+# 5. Optional ein Angebot auswaehlen und buchen.
+# 6. Template-Hash vorab validieren.
+# 7. Instanz mit explizitem `--disk` erstellen.
+# 8. Neue Instanz-ID extrahieren und speichern.
+# 9. Storage der realen Instanz per Post-Check verifizieren.
+# 10. Bei zu kleiner Storage optional automatisch zerstoeren.
+#
+# BENOETIGTE DATEIEN
+# ------------------
+# - ./scoring_engine.py
+# - ./params.json
+#
+# BENOETIGTE TOOLS
+# ----------------
+# - bash
+# - python3
+# - awk
+# - mktemp
+# - Vast.ai CLI: entweder `vastai` oder `vast`
+#
+# WICHTIGE UMGEBUNGSVARIABLEN
+# --------------------------
+# - QUERY
+#   Vast-Angebotsfilter fuer `search offers`.
+#
+# - GPU_FILTER
+#   Regex/Filter fuer erlaubte GPU-Modelle in der Scoring-Logik.
+#
+# - RESULTS
+#   Maximale Anzahl an Ergebnissen, die angezeigt werden.
+#
+# - TEMPLATE_HASH
+#   Hash-ID des Vast-Templates fuer `create instance --template_hash`.
+#
+# - VALIDATE_TEMPLATE_HASH
+#   1 = Template-Hash vor Buchung pruefen
+#   0 = keine Vorab-Pruefung
+#
+# - STRICT_TEMPLATE_VALIDATION
+#   1 = Abbruch, wenn Template nicht bestaetigt werden kann
+#   0 = Warnung, aber Fortsetzung
+#
+# - EXPECTED_TEMPLATE_DISK_GB
+#   Erwartete Mindestgroesse der Storage.
+#
+# - DISK_GB
+#   Explizite Disk-Groesse fuer den Create-Request.
+#   Standard: faellt auf EXPECTED_TEMPLATE_DISK_GB zurueck.
+#
+# - MIN_DISK_GB
+#   Sicherheitsgrenze fuer DISK_GB.
+#
+# - ENFORCE_DISK_GUARD
+#   1 = hart abbrechen, wenn DISK_GB unter MIN_DISK_GB liegt
+#   0 = nur warnen
+#
+# - POSTCHECK_INSTANCE
+#   1 = erzeugte Instanz nach der Buchung pruefen
+#   0 = kein Nachcheck
+#
+# - AUTO_DESTROY_BAD_STORAGE
+#   1 = Instanz bei zu kleiner Storage automatisch zerstoeren
+#   0 = nur Fehler melden
+#
+# - REQUIRE_EXPLICIT_CONFIRM
+#   1 = interaktive Bestaetigung vor Buchung
+#   0 = ohne Zusatzbestaetigung fortfahren
+#
+# - STATE_FILE
+#   Datei fuer die erzeugte Instanz-ID.
+#
+# - POSTCHECK_DEBUG_DIR
+#   Zielordner fuer Debug-Dateien bei Parse-Problemen.
+#
+# - DEBUG
+#   true = aktiviert `set -x`.
+#
+# BEISPIELE
+# ---------
+# Nur Angebote anzeigen:
+#   bash find-cheapest-instance.sh
+#
+# Buchung Dry-Run:
+#   bash find-cheapest-instance.sh --book 1 --dry-run
+#
+# Wirklich buchen:
+#   bash find-cheapest-instance.sh --book 1
+#
+# Andere Disk-Groesse erzwingen:
+#   DISK_GB=100 bash find-cheapest-instance.sh --book 1
 #
 # =============================================================================
 
@@ -42,7 +146,7 @@ export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 [[ "${DEBUG:-}" == "true" ]] && set -x
 
-VERSION="${VERSION:-2026-06-04.15}"
+VERSION="${VERSION:-2026-06-04.16}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN,US]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -206,6 +310,7 @@ validate_disk_value_if_set() {
     fi
 
     ok "Explizite Disk-Groesse fuer Create-Request aktiv: ${DISK_GB} GB"
+    return 0
 }
 
 print_booking_summary() {
@@ -377,12 +482,18 @@ extract_storage_from_row() {
     local row="$1"
     awk '
         {
+            n = 0
             for (i=1; i<=NF; i++) {
-                if ($i ~ /^[0-9]+(\.[0-9]+)?GB$/) {
+                if ($i ~ /^[0-9]+(\.[0-9]+)?$/) {
+                    vals[++n] = $i
+                } else if ($i ~ /^[0-9]+(\.[0-9]+)?GB$/) {
                     gsub(/GB/, "", $i)
-                    print $i
-                    exit
+                    vals[++n] = $i
                 }
+            }
+            if (n >= 1) {
+                print vals[n]
+                exit
             }
         }
     ' <<< "$row"
@@ -530,7 +641,7 @@ main() {
         IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ geo_field _ <<< "$raw_line"
 
         if [[ "$geo_field" =~ ^[[:space:]]*,[[:space:]]*$ ]]; then
-            log "Filtere Angebot mit Geo=',' heraus (China-Heuristik)."
+            log "Filtere Angebot mit Geo=',' heraus (China-Heuristik/ungueltige Geo-Angabe)."
             continue
         fi
 
@@ -540,7 +651,7 @@ main() {
     lines=("${filtered_lines[@]}")
 
     if [[ ${#lines[@]} -eq 0 ]]; then
-        warn "Keine passenden nicht-chinesischen Instanzen nach Filterung gefunden."
+        warn "Keine passenden Instanzen nach Filterung gefunden."
         exit 2
     fi
 
