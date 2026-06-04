@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.14
+# find-cheapest-instance.sh | Version: 2026-06-04.15
 # =============================================================================
 #
 # ZWECK
@@ -12,29 +12,29 @@
 #
 # SCHWERPUNKT DIESER FASSUNG
 # -------------------------
-# Diese Version erzwingt standardmaessig die gewuenschte Disk-Groesse explizit
-# im Create-Request, statt sich fuer Storage allein auf das Template zu
-# verlassen. Hintergrund ist ein real beobachteter Fall, in dem ein Template
-# mit 80 GB konfiguriert war, die erzeugte Instanz aber dennoch nur 10 GB
-# erhielt.
+# Diese Version erzwingt die gewuenschte Disk-Groesse explizit im Create-Request
+# und haertet den Post-Check gegen Unterschiede in Vast-CLI-Ausgaben ab.
 #
-# Zusaetzlich wird der Post-Check robuster:
-# - zuerst `show instance <id> --raw`
-# - dann `show instances --raw`
-# - zuletzt Tabellen-Fallback
-# - bei Fehlschlag werden Rohantworten in Debug-Dateien geschrieben
+# Wichtige Punkte:
+# - `--disk` wird standardmaessig explizit gesetzt.
+# - Template-Hash wird optional vorab validiert.
+# - Nach der Buchung wird die Instanzgroesse per CLI nachgeprueft.
+# - Bei Parse-Problemen werden Debug-Dateien geschrieben.
+# - Hilfsfunktionen enden explizit mit `return 0`, damit `set -e` und `trap ERR`
+#   keine falschen Fehler ausloesen.
 #
 # HINTERGRUND
 # -----------
-# Vast dokumentiert `--template_hash` fuer `create instance`, aber Template-
-# Werte dienen nur als Defaults und koennen durch explizite Request-Werte
-# ueberschrieben werden. In der Praxis hat sich gezeigt, dass fuer Storage ein
-# explizites `--disk` der zuverlaessigste Weg ist, um die gewuenschte Groesse
-# sicher zu erzwingen. [web:502][web:493][web:576]
+# Vast dokumentiert `create instance`, `show instance`, `show instances`,
+# `stop instance` und `destroy instance` als CLI-Kommandos fuer den kompletten
+# Instanz-Lebenszyklus. Die Disk-Groesse wird beim Erstellen festgelegt, daher
+# ist ein explizites `--disk` der zuverlaessigste Weg fuer reproduzierbare
+# Ergebnisse. [web:491][web:579][web:611]
 #
-# Einzelne Instanzen koennen per `show instance --raw` abgefragt werden, waehrend
-# `show instances --raw` eine Liste liefert. Diese Fassung verwendet beide Wege
-# und speichert Debug-Ausgaben bei Parse-Problemen. [web:587][web:579]
+# Bash-Funktionen geben den Status des letzten Kommandos zurueck. Wenn die
+# letzte Zeile nur ein fehlgeschlagener Test wie `[[ -n "$x" ]]` ist, liefert
+# die Funktion Exit-Code 1, was unter `set -e` als Fehler gilt. Diese Fassung
+# vermeidet genau das mit explizitem `return 0`. [web:650][web:651]
 #
 # =============================================================================
 
@@ -42,7 +42,7 @@ export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 [[ "${DEBUG:-}" == "true" ]] && set -x
 
-VERSION="${VERSION:-2026-06-04.14}"
+VERSION="${VERSION:-2026-06-04.15}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -75,6 +75,7 @@ die() { printf '[FEHLER] %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
     rm -f -- "${tmp_json:-}"
+    return 0
 }
 
 on_err() {
@@ -263,9 +264,20 @@ save_postcheck_debug() {
     local row_raw="${4:-}"
 
     mkdir -p "$POSTCHECK_DEBUG_DIR"
-    [[ -n "$single_raw" ]] && printf '%s\n' "$single_raw" > "${POSTCHECK_DEBUG_DIR}/instance_${instance_id}_single_raw.txt"
-    [[ -n "$list_raw" ]] && printf '%s\n' "$list_raw" > "${POSTCHECK_DEBUG_DIR}/instance_${instance_id}_list_raw.txt"
-    [[ -n "$row_raw" ]] && printf '%s\n' "$row_raw" > "${POSTCHECK_DEBUG_DIR}/instance_${instance_id}_table_row.txt"
+
+    if [[ -n "$single_raw" ]]; then
+        printf '%s\n' "$single_raw" > "${POSTCHECK_DEBUG_DIR}/instance_${instance_id}_single_raw.txt"
+    fi
+
+    if [[ -n "$list_raw" ]]; then
+        printf '%s\n' "$list_raw" > "${POSTCHECK_DEBUG_DIR}/instance_${instance_id}_list_raw.txt"
+    fi
+
+    if [[ -n "$row_raw" ]]; then
+        printf '%s\n' "$row_raw" > "${POSTCHECK_DEBUG_DIR}/instance_${instance_id}_table_row.txt"
+    fi
+
+    return 0
 }
 
 extract_storage_from_json() {
@@ -299,7 +311,7 @@ def to_items(x):
     if isinstance(x, list):
         return x
     if isinstance(x, dict):
-        if instance_id and any(k in x for k in ("id", "contract_id", "new_contract")):
+        if instance_id and any(k in x for k in ("id", "contract_id", "new_contract", "instance_id")):
             return [x]
         for key in ("instances", "results", "data"):
             v = x.get(key)
@@ -380,6 +392,7 @@ destroy_bad_instance() {
     local instance_id="$1"
     warn "Zerstoere Instanz $instance_id wegen ungueltiger Storage-Groesse..."
     vast_cmd destroy instance "$instance_id" >/dev/null 2>&1 || warn "Destroy fuer Instanz $instance_id konnte nicht bestaetigt werden."
+    return 0
 }
 
 postcheck_instance_storage() {
@@ -414,8 +427,9 @@ postcheck_instance_storage() {
     if [[ -z "$storage_val" ]]; then
         if row="$(get_instance_row "$instance_id")"; then
             printf '%s\n' "$row"
-            if storage_val="$(extract_storage_from_row "$row")"; then
-                [[ -n "$storage_val" ]] && source_used="show instances table"
+            storage_val="$(extract_storage_from_row "$row" || true)"
+            if [[ -n "$storage_val" ]]; then
+                source_used="show instances table"
             fi
         fi
     fi
@@ -440,6 +454,7 @@ postcheck_instance_storage() {
     fi
 
     ok "Post-Check erfolgreich: Storage ${storage_val} GB >= ${EXPECTED_TEMPLATE_DISK_GB} GB"
+    return 0
 }
 
 main() {
