@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.11
+# find-cheapest-instance.sh | Version: 2026-06-04.12
 # =============================================================================
 #
 # ZWECK
@@ -13,20 +13,29 @@
 # SCHWERPUNKT DIESER FASSUNG
 # -------------------------
 # Diese Version haertet insbesondere den Buchungsfluss gegen Fehlkonfigurationen
-# beim Einsatz von Vast-Templates:
+# beim Einsatz von Vast-Templates und gegen Unterschiede zwischen alter und
+# neuer Vast.ai CLI:
 #
 # - Template-Hash wird vor der Buchung optional validiert.
+# - Die Validierung nutzt mehrere Fallbacks fuer unterschiedliche CLI-Versionen.
 # - Es gibt keinen impliziten Disk-Override.
 # - Ein explizites DISK_GB wird vorab gegen Sicherheitsgrenzen geprueft.
 # - Nach der Buchung wird die reale Instanz optional nachgeprueft.
 # - Falls die erzeugte Storage-Groesse kleiner als erwartet ist, kann die
 #   Instanz automatisch sofort wieder zerstoert werden.
+# - Ein ERR-Trap gibt bei Abbruechen Zeile, Exit-Code und letzten Befehl aus.
 #
 # HINTERGRUND
 # -----------
 # Vast-Templates liefern Standardwerte fuer die Instanzerstellung, koennen aber
-# durch explizit uebergebene Request-Werte ueberschrieben werden. Deshalb wird
-# --disk nur dann uebergeben, wenn DISK_GB explizit gesetzt ist.
+# durch explizit uebergebene Request-Werte ueberschrieben werden. Die aktuelle
+# Vast-Dokumentation beschreibt fuer `search templates` sowohl einen API-Weg mit
+# Filterobjekten als auch in der CLI eine einfache Query-Syntax. Deshalb nutzt
+# dieses Script mehrere Validierungswege, um mit unterschiedlichen CLI-Staenden
+# robust zu bleiben. [web:488][web:566]
+#
+# Fuer die Instanzerstellung wird `--template_hash` verwendet, was in der Vast
+# CLI dokumentiert und seit Produkt-Updates explizit unterstuetzt ist. [web:504][web:576]
 #
 # FUNKTIONSUEBERSICHT
 # ------------------
@@ -35,7 +44,7 @@
 # 3. Angebote mit scoring_engine.py bewerten.
 # 4. Ergebnisse filtern und tabellarisch darstellen.
 # 5. Optional ein Angebot auswaehlen und buchen.
-# 6. Template-Hash vorab validieren.
+# 6. Template-Hash vorab validieren, mit CLI-Fallbacks.
 # 7. Gebuchte Instanz-ID extrahieren und speichern.
 # 8. Storage der real erzeugten Instanz nachpruefen.
 # 9. Bei zu kleiner Storage-Groesse optional automatisch zerstoeren.
@@ -43,7 +52,10 @@
 # BENOETIGTE DATEIEN
 # ------------------
 # - ./scoring_engine.py
+#   Bewertet Vast-Angebote und erzeugt tab-separierte Ergebniszeilen.
+#
 # - ./params.json
+#   Eingabeparameter fuer scoring_engine.py.
 #
 # BENOETIGTE TOOLS
 # ----------------
@@ -55,12 +67,75 @@
 #
 # WICHTIGE UMGEBUNGSVARIABLEN
 # --------------------------
-# - QUERY, GPU_FILTER, RESULTS
-# - TEMPLATE_HASH, VALIDATE_TEMPLATE_HASH, STRICT_TEMPLATE_VALIDATION
-# - DISK_GB, EXPECTED_TEMPLATE_DISK_GB, MIN_DISK_GB, ENFORCE_DISK_GUARD
-# - POSTCHECK_INSTANCE, AUTO_DESTROY_BAD_STORAGE
+# - QUERY
+#   Vast-Angebotsfilter fuer `search offers`.
+#
+# - GPU_FILTER
+#   Regex/Filter fuer erlaubte GPU-Modelle in der Scoring-Logik.
+#
+# - RESULTS
+#   Maximale Anzahl an Ergebnissen, die angezeigt werden.
+#
+# - TEMPLATE_HASH
+#   Hash-ID des Vast-Templates fuer `create instance --template_hash`.
+#
+# - VALIDATE_TEMPLATE_HASH
+#   1 = Template-Hash vor Buchung pruefen
+#   0 = keine Vorab-Pruefung
+#
+# - STRICT_TEMPLATE_VALIDATION
+#   1 = Abbruch, wenn Template nicht bestaetigt werden kann
+#   0 = Warnung, aber Fortsetzung
+#
+# - DISK_GB
+#   Expliziter Disk-Override in GB. Leer = kein `--disk`, Template-Default
+#   bleibt aktiv.
+#
+# - EXPECTED_TEMPLATE_DISK_GB
+#   Erwartete Mindestgroesse der Storage, die nach Buchung erreicht sein soll.
+#
+# - MIN_DISK_GB
+#   Sicherheitsgrenze fuer explizit gesetztes DISK_GB.
+#
+# - ENFORCE_DISK_GUARD
+#   1 = hart abbrechen, wenn DISK_GB unter MIN_DISK_GB liegt
+#   0 = nur warnen
+#
+# - POSTCHECK_INSTANCE
+#   1 = erzeugte Instanz nach der Buchung pruefen
+#   0 = kein Nachcheck
+#
+# - AUTO_DESTROY_BAD_STORAGE
+#   1 = Instanz bei zu kleiner Storage automatisch zerstoeren
+#   0 = nur Fehler melden
+#
 # - REQUIRE_EXPLICIT_CONFIRM
+#   1 = vor Buchung interaktive Bestaetigung erzwingen
+#   0 = ohne Zusatzbestaetigung fortfahren
+#
 # - STATE_FILE
+#   Datei, in die die erzeugte Instanz-ID geschrieben wird.
+#
+# - DEBUG
+#   true = aktiviert `set -x` fuer Bash-Trace.
+#
+# PROGRAMMABLAUF BEI BUCHUNG
+# --------------------------
+# 1. Template wird optional validiert.
+# 2. Nutzer bestaetigt Offer, Modell und Template.
+# 3. Instanz wird mit `create instance` erstellt.
+# 4. Rueckgabe wird auf neue Contract-/Instanz-ID geparst.
+# 5. Instanz-ID wird in STATE_FILE gespeichert.
+# 6. Erzeugte Instanz wird auf Storage-Groesse geprueft.
+# 7. Bei Untergroesse kann die Instanz automatisch zerstoert werden.
+#
+# AUSGABEN
+# --------
+# Das Script erzeugt:
+# - eine tabellarische Uebersicht der bestbewerteten Vast-Angebote;
+# - farbliche Kennzeichnung fuer Top Score und Best Test;
+# - Logging fuer Validierung, Buchung und Post-Check;
+# - optional einen gespeicherten Zustand in STATE_FILE.
 #
 # EXIT-VERHALTEN
 # --------------
@@ -70,24 +145,51 @@
 #
 # BEISPIELE
 # ---------
+# Nur Angebote anzeigen:
 #   bash find-cheapest-instance.sh
+#
+# Testmodus:
 #   bash find-cheapest-instance.sh --test
+#
+# Dry-Run fuer Buchung:
 #   bash find-cheapest-instance.sh --book 1 --dry-run
+#
+# Angebot Nr. 2 wirklich buchen:
+#   bash find-cheapest-instance.sh --book 2
+#
+# Buchung mit explizitem Disk-Override:
 #   DISK_GB=100 bash find-cheapest-instance.sh --book 1
+#
+# Bei alter CLI Template-Pruefung notfalls nur warnen:
+#   STRICT_TEMPLATE_VALIDATION=0 bash find-cheapest-instance.sh --book 1
+#
+# DEBUG-MODUS:
+#   DEBUG=true bash find-cheapest-instance.sh --book
+#
+# WARTUNGSHINWEIS
+# ---------------
+# Bei Aenderungen an Vast.ai CLI-Ausgaben oder JSON-Strukturen sollten vor allem
+# diese Bereiche erneut geprueft werden:
+# - validate_template_hash
+# - extract_new_contract_id
+# - postcheck_instance_storage
+# - extract_storage_from_json
 #
 # DOKUMENTATIONSSTANDARD
 # ---------------------
 # Dieses Script verwendet bewusst einen ausfuehrlichen Datei-Header, damit
 # Zweck, Risiken, Eingaben und Sicherheitsmechanismen direkt am Dateianfang
-# sichtbar sind.
+# sichtbar sind. Das entspricht ueblicher Bash-Best-Practice mit klarer
+# Shebang, Header und strengem Fehlerhandling. [web:573][web:575]
 #
 # =============================================================================
 
 export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
+[[ "${DEBUG:-}" == "true" ]] && set -x
 trap 'rc=$?; echo "[FEHLER] Zeile $LINENO | Exit-Code $rc | Befehl: $BASH_COMMAND" >&2' ERR
 
-VERSION="${VERSION:-2026-06-04.11}"
+VERSION="${VERSION:-2026-06-04.12}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -149,33 +251,51 @@ validate_template_hash() {
     [[ "$VALIDATE_TEMPLATE_HASH" == "1" ]] || return 0
     [[ -n "$TEMPLATE_HASH" ]] || die "TEMPLATE_HASH ist leer."
 
-    local filter=""
     local out=""
     local rc=0
     local escaped_hash=""
+    local filter=""
+    local tried=()
 
     escaped_hash="$(json_escape "$TEMPLATE_HASH")"
     filter="{\"hash_id\":{\"eq\":${escaped_hash}}}"
 
+    tried+=("search templates --raw --select_filters '$filter'")
     out="$(vast_cmd search templates --raw --select_filters "$filter" 2>&1)" || rc=$?
 
-    if [[ $rc -ne 0 ]]; then
-        if [[ "$STRICT_TEMPLATE_VALIDATION" == "1" ]]; then
-            die "Template-Suche fehlgeschlagen. STRICT_TEMPLATE_VALIDATION=1. Filter: $filter | Ausgabe: $out"
-        fi
-        warn "Template-Suche fehlgeschlagen, fahre trotzdem fort. Filter: $filter | Ausgabe: $out"
+    if [[ $rc -eq 0 && -n "$out" && "$out" != "[]" ]]; then
+        ok "Template-Hash validiert via --select_filters: $TEMPLATE_HASH"
         return 0
     fi
 
-    if [[ -z "$out" || "$out" == "[]" ]]; then
-        if [[ "$STRICT_TEMPLATE_VALIDATION" == "1" ]]; then
-            die "Template-Hash konnte per 'search templates --select_filters' nicht bestaetigt werden: $TEMPLATE_HASH"
-        fi
-        warn "Template-Hash konnte per search templates nicht bestaetigt werden, verwende ihn trotzdem fuer create instance: $TEMPLATE_HASH"
+    if [[ "$out" == *"unrecognized arguments: --select_filt"* || "$out" == *"unrecognized arguments: --select_filters"* ]]; then
+        warn "CLI unterstuetzt --select_filters nicht; falle auf Query-Syntax zurueck."
+    fi
+
+    rc=0
+    tried+=("search templates --raw 'hash_id=$TEMPLATE_HASH'")
+    out="$(vast_cmd search templates --raw "hash_id=$TEMPLATE_HASH" 2>&1)" || rc=$?
+
+    if [[ $rc -eq 0 && -n "$out" && "$out" != "[]" ]]; then
+        ok "Template-Hash validiert via Query-Syntax: $TEMPLATE_HASH"
         return 0
     fi
 
-    ok "Template-Hash validiert: $TEMPLATE_HASH"
+    rc=0
+    tried+=("search templates --raw '$TEMPLATE_HASH'")
+    out="$(vast_cmd search templates --raw "$TEMPLATE_HASH" 2>&1)" || rc=$?
+
+    if [[ $rc -eq 0 && -n "$out" && "$out" != "[]" ]]; then
+        ok "Template-Hash plausibel gefunden via Freitextsuche: $TEMPLATE_HASH"
+        return 0
+    fi
+
+    if [[ "$STRICT_TEMPLATE_VALIDATION" == "1" ]]; then
+        die "Template-Hash konnte nicht bestaetigt werden. Versucht: ${tried[*]} | Letzte Ausgabe: $out"
+    fi
+
+    warn "Template-Hash konnte nicht bestaetigt werden, verwende ihn trotzdem fuer create instance: $TEMPLATE_HASH"
+    return 0
 }
 
 extract_new_contract_id() {
