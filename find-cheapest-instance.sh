@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.04
+# find-cheapest-instance.sh | Version: 2026-06-04.05
 # =============================================================================
 #
 # ZWECK
@@ -24,12 +24,39 @@
 # (--template_hash / hash_id). Das Template liefert die benoetigten Default-
 # Werte, sodass kein menschenlesbarer Name bekannt sein muss.
 #
+# WICHTIGER HINWEIS ZUR TEMPLATE-PRUEFUNG
+# --------------------------------------
+# Vast.ai unterstuetzt das direkte Erzeugen einer Instanz ueber
+#   vastai create instance <offer_id> --template_hash <hash>
+# wobei der Template-Hash als maßgeblicher Buchungsparameter dient.
+#
+# Zusaetzlich bietet Vast.ai mit
+#   vastai search templates
+# eine Suchfunktion fuer Templates an. Diese Suche ist jedoch nicht in jedem
+# praktischen Fall ein verlaesslicher Vorab-Check dafuer, ob ein spaeterer
+# create-instance-Aufruf mit --template_hash erfolgreich sein wird.
+#
+# Hintergrund:
+# - Laut Vast-Dokumentation koennen Templates ueber ihre hash_id verwendet
+#   werden.
+# - Laut Vast-Dokumentation unterstuetzt create instance die Option
+#   --template_hash direkt.
+# - Laut Vast-Dokumentation liefert search templates Suchergebnisse ueber
+#   eigene und oeffentlich geteilte Templates.
+#
+# Daraus folgt fuer dieses Script:
+# - Die Template-Suche wird nur als weiche Zusatzpruefung behandelt.
+# - Wenn search templates den Hash nicht bestaetigen kann, wird dies als
+#   Warnung protokolliert, aber nicht mehr als harter Abbruch gewertet.
+# - Die eigentliche Wahrheit liefert der reale Buchungsversuch mit
+#   create instance --template_hash.
+#
 # ROBUSTHEIT
 # ----------
 # Diese Version verbessert gegenueber einer einfacheren Fassung vor allem:
 # - sichere Temp-Dateien statt fester /tmp-Pfade;
 # - Vorab-Pruefung von CLI und Authentifizierung;
-# - optionale Validierung des Template-Hashs vor der Buchung;
+# - optionale weiche Validierung des Template-Hashs vor der Buchung;
 # - defensive Behandlung leerer oder fehlerhafter Suchergebnisse;
 # - robustere Extraktion der neu erzeugten Instanz-ID aus CLI-Ausgaben;
 # - saubere Trennung von Suchphase, Bewertungsphase und Buchungsphase.
@@ -83,7 +110,7 @@
 #   Datei, in die die neue Instanz-ID geschrieben wird.
 #
 # - VALIDATE_TEMPLATE_HASH
-#   1 = Template-Hash vor Buchung via "search templates" pruefen.
+#   1 = Template-Hash vor Buchung weich via "search templates" pruefen.
 #   0 = keine Vorab-Pruefung.
 #
 # - TEMPLATE_QUERY_MODE
@@ -121,7 +148,8 @@
 # 5. Rohdaten an scoring_engine.py uebergeben.
 # 6. Ergebniszeilen lokal nach Geo-Heuristik filtern.
 # 7. Tabellenansicht erzeugen und Top-Angebote markieren.
-# 8. Optional Buchung ausfuehren und neue Instanz-ID sichern.
+# 8. Optional weiche Template-Pruefung ausfuehren.
+# 9. Optional Buchung ausfuehren und neue Instanz-ID sichern.
 #
 # BEISPIELE
 # ---------
@@ -137,12 +165,15 @@
 # Buchung nur simulieren:
 #   bash find-cheapest-instance.sh --book 1 --dry-run
 #
+# Template-Vorabpruefung deaktivieren:
+#   VALIDATE_TEMPLATE_HASH=0 bash find-cheapest-instance.sh --book
+#
 # =============================================================================
 
 export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 
-VERSION="${VERSION:-2026-06-04.04}"
+VERSION="${VERSION:-2026-06-04.05}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -203,11 +234,13 @@ validate_template_hash() {
     out="$(vast_cmd search templates --raw "$query" 2>&1)" || rc=$?
 
     if [[ $rc -ne 0 ]]; then
-        die "Template-Suche fehlgeschlagen. Query: $query | Ausgabe: $out"
+        warn "Template-Suche fehlgeschlagen, fahre trotzdem fort. Query: $query | Ausgabe: $out"
+        return 0
     fi
 
     if [[ -z "$out" || "$out" == "[]" ]]; then
-        die "Template-Hash konnte nicht validiert werden: $TEMPLATE_HASH"
+        warn "Template-Hash konnte per 'search templates' nicht bestaetigt werden, verwende ihn trotzdem fuer create instance: $TEMPLATE_HASH"
+        return 0
     fi
 
     ok "Template-Hash validiert: $TEMPLATE_HASH"
@@ -396,8 +429,14 @@ PY
             echo "[PROZESS] Sende Buchungsbefehl an Vast.ai..."
 
             local book_output=""
-            book_output="$(vast_cmd create instance "$target_id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" 2>&1 || true)"
+            local rc=0
+
+            book_output="$(vast_cmd create instance "$target_id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" 2>&1)" || rc=$?
             echo "$book_output"
+
+            if [[ $rc -ne 0 ]]; then
+                die "Buchung fehlgeschlagen."
+            fi
 
             local extracted_id=""
             extracted_id="$(extract_new_contract_id "$book_output")"
