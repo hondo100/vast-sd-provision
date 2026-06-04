@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.12
+# find-cheapest-instance.sh | Version: 2026-06-04.13
 # =============================================================================
 #
 # ZWECK
@@ -12,30 +12,30 @@
 #
 # SCHWERPUNKT DIESER FASSUNG
 # -------------------------
-# Diese Version haertet insbesondere den Buchungsfluss gegen Fehlkonfigurationen
-# beim Einsatz von Vast-Templates und gegen Unterschiede zwischen alter und
-# neuer Vast.ai CLI:
+# Diese Version haertet den Buchungsfluss gegen Fehlkonfigurationen rund um
+# Vast-Templates, Storage-Groessen und CLI-Unterschiede:
 #
 # - Template-Hash wird vor der Buchung optional validiert.
 # - Die Validierung nutzt mehrere Fallbacks fuer unterschiedliche CLI-Versionen.
 # - Es gibt keinen impliziten Disk-Override.
 # - Ein explizites DISK_GB wird vorab gegen Sicherheitsgrenzen geprueft.
-# - Nach der Buchung wird die reale Instanz optional nachgeprueft.
+# - Nach der Buchung wird die reale Instanz bevorzugt gezielt per
+#   `show instance <id> --raw` geprueft.
 # - Falls die erzeugte Storage-Groesse kleiner als erwartet ist, kann die
 #   Instanz automatisch sofort wieder zerstoert werden.
-# - Ein ERR-Trap gibt bei Abbruechen Zeile, Exit-Code und letzten Befehl aus.
+# - Cleanup und Fehlerbehandlung sind zentral ueber Trap-Funktionen geregelt.
 #
 # HINTERGRUND
 # -----------
 # Vast-Templates liefern Standardwerte fuer die Instanzerstellung, koennen aber
-# durch explizit uebergebene Request-Werte ueberschrieben werden. Die aktuelle
-# Vast-Dokumentation beschreibt fuer `search templates` sowohl einen API-Weg mit
-# Filterobjekten als auch in der CLI eine einfache Query-Syntax. Deshalb nutzt
-# dieses Script mehrere Validierungswege, um mit unterschiedlichen CLI-Staenden
-# robust zu bleiben. [web:488][web:566]
+# durch explizit uebergebene Request-Werte ueberschrieben werden. Die Vast-Doku
+# beschreibt fuer die Instanzerstellung `--template_hash`, und fuer einzelne
+# Instanzen bzw. Instanzlisten existieren sowohl `show instance --raw` als auch
+# `show instances --raw`. Diese Fassung nutzt diese CLI-Pfade bewusst in dieser
+# Reihenfolge, um die Nachpruefung robuster zu machen. [web:502][web:576][web:587][web:579]
 #
-# Fuer die Instanzerstellung wird `--template_hash` verwendet, was in der Vast
-# CLI dokumentiert und seit Produkt-Updates explizit unterstuetzt ist. [web:504][web:576]
+# Fuer das Zerstoeren falsch erzeugter Instanzen wird `destroy instance <id>`
+# genutzt, was in der Vast-Dokumentation ebenfalls explizit beschrieben ist. [web:611][web:491]
 #
 # FUNKTIONSUEBERSICHT
 # ------------------
@@ -179,17 +179,16 @@
 # ---------------------
 # Dieses Script verwendet bewusst einen ausfuehrlichen Datei-Header, damit
 # Zweck, Risiken, Eingaben und Sicherheitsmechanismen direkt am Dateianfang
-# sichtbar sind. Das entspricht ueblicher Bash-Best-Practice mit klarer
-# Shebang, Header und strengem Fehlerhandling. [web:573][web:575]
+# sichtbar sind. Ein striktes Fehlerhandling mit zentralem Cleanup reduziert
+# Nebenwirkungen bei Fehlschlaegen. [web:491][web:587]
 #
 # =============================================================================
 
 export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 [[ "${DEBUG:-}" == "true" ]] && set -x
-trap 'rc=$?; echo "[FEHLER] Zeile $LINENO | Exit-Code $rc | Befehl: $BASH_COMMAND" >&2' ERR
 
-VERSION="${VERSION:-2026-06-04.12}"
+VERSION="${VERSION:-2026-06-04.13}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -211,12 +210,26 @@ STATE_FILE="${STATE_FILE:-/home/werner/github-scripts/.current_instance}"
 VALIDATE_TEMPLATE_HASH="${VALIDATE_TEMPLATE_HASH:-1}"
 
 tmp_json=""
+LAST_BOOKED_INSTANCE_ID=""
 
 c() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
 log() { printf '[INFO] %s\n' "$*"; }
 warn() { printf '[WARNUNG] %s\n' "$*" >&2; }
 ok() { printf '[SUCCESS] %s\n' "$*"; }
 die() { printf '[FEHLER] %s\n' "$*" >&2; exit 1; }
+
+cleanup() {
+    rm -f -- "${tmp_json:-}"
+}
+
+on_err() {
+    local rc=$?
+    echo "[FEHLER] Zeile ${BASH_LINENO[0]} | Exit-Code $rc | Befehl: ${BASH_COMMAND}" >&2
+    exit "$rc"
+}
+
+trap cleanup EXIT
+trap on_err ERR
 
 vast_cmd() {
     if command -v vastai >/dev/null 2>&1; then
@@ -370,7 +383,12 @@ confirm_booking() {
     [[ "$conf" == [yY] ]] || { echo "Abbruch."; exit 0; }
 }
 
-get_instance_raw_json() {
+get_single_instance_raw_json() {
+    local instance_id="$1"
+    vast_cmd show instance "$instance_id" --raw 2>/dev/null || return 1
+}
+
+get_instances_raw_json() {
     vast_cmd show instances --raw 2>/dev/null || return 1
 }
 
@@ -384,12 +402,12 @@ get_instance_row() {
 
 extract_storage_from_json() {
     local raw_json="$1"
-    local instance_id="$2"
+    local instance_id="${2:-}"
 
     python3 - "$instance_id" <<'PY' <<< "$raw_json"
 import json, sys
 
-instance_id = str(sys.argv[1])
+instance_id = str(sys.argv[1] or "")
 raw = sys.stdin.read().strip()
 if not raw:
     raise SystemExit(1)
@@ -399,39 +417,51 @@ try:
 except Exception:
     raise SystemExit(1)
 
-def as_list(x):
+def normalize_items(x):
     if isinstance(x, list):
         return x
     if isinstance(x, dict):
+        if instance_id:
+            return [x]
         for key in ("instances", "results", "data"):
             v = x.get(key)
             if isinstance(v, list):
                 return v
     return []
 
-items = as_list(data)
-
-for item in items:
-    iid = str(item.get("id", item.get("contract_id", item.get("new_contract", ""))))
-    if iid != instance_id:
-        continue
-
-    candidates = [
+def candidate_values(item):
+    vals = []
+    vals.extend([
         item.get("disk_space"),
         item.get("disk"),
-        item.get("storage"),
         item.get("disk_gb"),
-    ]
-
+        item.get("storage"),
+        item.get("storage_gb"),
+        item.get("disk_size"),
+        item.get("allocated_storage"),
+    ])
     machine = item.get("machine") or {}
     if isinstance(machine, dict):
-        candidates.extend([
+        vals.extend([
             machine.get("disk_space"),
             machine.get("disk"),
             machine.get("storage"),
+            machine.get("disk_size"),
         ])
+    return vals
 
-    for val in candidates:
+items = normalize_items(data)
+
+for item in items:
+    if not isinstance(item, dict):
+        continue
+
+    if instance_id:
+        iid = str(item.get("id", item.get("contract_id", item.get("new_contract", ""))))
+        if iid != instance_id:
+            continue
+
+    for val in candidate_values(item):
         if val is None:
             continue
         try:
@@ -455,6 +485,14 @@ destroy_bad_instance() {
     vast_cmd destroy instance "$instance_id" >/dev/null 2>&1 || warn "Destroy fuer Instanz $instance_id konnte nicht bestaetigt werden."
 }
 
+compare_lt() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+a=float(sys.argv[1]); b=float(sys.argv[2])
+raise SystemExit(0 if a < b else 1)
+PY
+}
+
 postcheck_instance_storage() {
     local instance_id="$1"
     [[ "$POSTCHECK_INSTANCE" == "1" ]] || return 0
@@ -465,10 +503,21 @@ postcheck_instance_storage() {
     local raw_json=""
     local row=""
     local storage_val=""
+    local source_used=""
 
-    if raw_json="$(get_instance_raw_json)"; then
+    if raw_json="$(get_single_instance_raw_json "$instance_id")"; then
         if storage_val="$(extract_storage_from_json "$raw_json" "$instance_id" 2>/dev/null)"; then
-            log "Storage aus JSON-Post-Check extrahiert: ${storage_val} GB"
+            source_used="show instance --raw"
+            log "Storage aus gezieltem Instance-JSON extrahiert: ${storage_val} GB"
+        fi
+    fi
+
+    if [[ -z "$storage_val" ]]; then
+        if raw_json="$(get_instances_raw_json)"; then
+            if storage_val="$(extract_storage_from_json "$raw_json" "$instance_id" 2>/dev/null)"; then
+                source_used="show instances --raw"
+                log "Storage aus Instanzlisten-JSON extrahiert: ${storage_val} GB"
+            fi
         fi
     fi
 
@@ -476,6 +525,7 @@ postcheck_instance_storage() {
         if row="$(get_instance_row "$instance_id")"; then
             printf '%s\n' "$row"
             storage_val="$(extract_storage_from_row "$row")"
+            [[ -n "$storage_val" ]] && source_used="show instances table"
         fi
     fi
 
@@ -484,12 +534,9 @@ postcheck_instance_storage() {
         return 0
     fi
 
-    if python3 - "$storage_val" "$EXPECTED_TEMPLATE_DISK_GB" <<'PY'
-import sys
-a=float(sys.argv[1]); b=float(sys.argv[2])
-raise SystemExit(0 if a + 1e-9 < b else 1)
-PY
-    then
+    log "Verwendete Post-Check-Quelle: ${source_used:-unbekannt}"
+
+    if compare_lt "$storage_val" "$EXPECTED_TEMPLATE_DISK_GB"; then
         warn "Instanz hat zu wenig Storage: ${storage_val} GB < ${EXPECTED_TEMPLATE_DISK_GB} GB"
 
         if [[ "$AUTO_DESTROY_BAD_STORAGE" == "1" ]]; then
@@ -556,7 +603,6 @@ main() {
     echo "========================================================================================="
 
     tmp_json="$(mktemp /tmp/vast_offers.XXXXXX.json)"
-    trap 'rm -f -- "${tmp_json:-}"' EXIT
 
     if [[ "$TEST_MODE" -ne 1 ]]; then
         log "Lade Angebotsdaten via Vast.ai..."
@@ -608,12 +654,7 @@ main() {
         local test_c=""
         IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ _ test_c <<< "${lines[$j]}"
 
-        if python3 - "$test_c" "$min_test" <<'PY'
-import sys
-a=float(sys.argv[1]); b=float(sys.argv[2])
-raise SystemExit(0 if a < b else 1)
-PY
-        then
+        if compare_lt "$test_c" "$min_test"; then
             min_test="$test_c"
             cheapest_idx="$j"
         fi
@@ -659,11 +700,6 @@ PY
         [[ "$BOOK_INDEX" == "q" ]] && { echo "Abbruch."; exit 0; }
         [[ "$BOOK_INDEX" =~ ^[0-9]+$ ]] || die "Ungueltige Auswahl: $BOOK_INDEX"
 
-        if [[ "$DRY_RUN" -eq 1 ]]; then
-            echo "[DRY-RUN] Instanz $BOOK_INDEX waere gebucht worden."
-            exit 0
-        fi
-
         local idx=$((BOOK_INDEX - 1))
         if [[ $idx -lt 0 || $idx -ge ${#rows[@]} ]]; then
             die "Ungueltige Auswahl."
@@ -675,16 +711,27 @@ PY
 
         confirm_booking "$target_id" "$model_name"
 
-        echo "[PROZESS] Sende Buchungsbefehl an Vast.ai..."
-
-        local book_output=""
-        local rc=0
         local create_args=()
-
         create_args=(create instance "$target_id" --template_hash "$TEMPLATE_HASH")
         if [[ -n "${DISK_GB:-}" ]]; then
             create_args+=(--disk "$DISK_GB")
         fi
+
+        echo ""
+        echo "[INFO] Finaler Vast-Befehl:"
+        printf '  vastai'
+        printf ' %q' "${create_args[@]}"
+        printf '\n'
+
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            echo "[DRY-RUN] Instanz $BOOK_INDEX waere mit obigem Befehl gebucht worden."
+            exit 0
+        fi
+
+        echo "[PROZESS] Sende Buchungsbefehl an Vast.ai..."
+
+        local book_output=""
+        local rc=0
 
         book_output="$(vast_cmd "${create_args[@]}" 2>&1)" || rc=$?
         echo "$book_output"
@@ -697,6 +744,7 @@ PY
         extracted_id="$(extract_new_contract_id "$book_output")"
 
         if [[ -n "$extracted_id" ]]; then
+            LAST_BOOKED_INSTANCE_ID="$extracted_id"
             mkdir -p "$(dirname "$STATE_FILE")"
             echo "$extracted_id" > "$STATE_FILE"
             ok "Instanz-ID $extracted_id wurde in $STATE_FILE gesichert."
