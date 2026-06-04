@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.13
+# find-cheapest-instance.sh | Version: 2026-06-04.14
 # =============================================================================
 #
 # ZWECK
@@ -12,175 +12,29 @@
 #
 # SCHWERPUNKT DIESER FASSUNG
 # -------------------------
-# Diese Version haertet den Buchungsfluss gegen Fehlkonfigurationen rund um
-# Vast-Templates, Storage-Groessen und CLI-Unterschiede:
+# Diese Version erzwingt standardmaessig die gewuenschte Disk-Groesse explizit
+# im Create-Request, statt sich fuer Storage allein auf das Template zu
+# verlassen. Hintergrund ist ein real beobachteter Fall, in dem ein Template
+# mit 80 GB konfiguriert war, die erzeugte Instanz aber dennoch nur 10 GB
+# erhielt.
 #
-# - Template-Hash wird vor der Buchung optional validiert.
-# - Die Validierung nutzt mehrere Fallbacks fuer unterschiedliche CLI-Versionen.
-# - Es gibt keinen impliziten Disk-Override.
-# - Ein explizites DISK_GB wird vorab gegen Sicherheitsgrenzen geprueft.
-# - Nach der Buchung wird die reale Instanz bevorzugt gezielt per
-#   `show instance <id> --raw` geprueft.
-# - Falls die erzeugte Storage-Groesse kleiner als erwartet ist, kann die
-#   Instanz automatisch sofort wieder zerstoert werden.
-# - Cleanup und Fehlerbehandlung sind zentral ueber Trap-Funktionen geregelt.
+# Zusaetzlich wird der Post-Check robuster:
+# - zuerst `show instance <id> --raw`
+# - dann `show instances --raw`
+# - zuletzt Tabellen-Fallback
+# - bei Fehlschlag werden Rohantworten in Debug-Dateien geschrieben
 #
 # HINTERGRUND
 # -----------
-# Vast-Templates liefern Standardwerte fuer die Instanzerstellung, koennen aber
-# durch explizit uebergebene Request-Werte ueberschrieben werden. Die Vast-Doku
-# beschreibt fuer die Instanzerstellung `--template_hash`, und fuer einzelne
-# Instanzen bzw. Instanzlisten existieren sowohl `show instance --raw` als auch
-# `show instances --raw`. Diese Fassung nutzt diese CLI-Pfade bewusst in dieser
-# Reihenfolge, um die Nachpruefung robuster zu machen. [web:502][web:576][web:587][web:579]
+# Vast dokumentiert `--template_hash` fuer `create instance`, aber Template-
+# Werte dienen nur als Defaults und koennen durch explizite Request-Werte
+# ueberschrieben werden. In der Praxis hat sich gezeigt, dass fuer Storage ein
+# explizites `--disk` der zuverlaessigste Weg ist, um die gewuenschte Groesse
+# sicher zu erzwingen. [web:502][web:493][web:576]
 #
-# Fuer das Zerstoeren falsch erzeugter Instanzen wird `destroy instance <id>`
-# genutzt, was in der Vast-Dokumentation ebenfalls explizit beschrieben ist. [web:611][web:491]
-#
-# FUNKTIONSUEBERSICHT
-# ------------------
-# 1. Vast.ai CLI und lokale Dateien pruefen.
-# 2. Angebote per Vast.ai laden.
-# 3. Angebote mit scoring_engine.py bewerten.
-# 4. Ergebnisse filtern und tabellarisch darstellen.
-# 5. Optional ein Angebot auswaehlen und buchen.
-# 6. Template-Hash vorab validieren, mit CLI-Fallbacks.
-# 7. Gebuchte Instanz-ID extrahieren und speichern.
-# 8. Storage der real erzeugten Instanz nachpruefen.
-# 9. Bei zu kleiner Storage-Groesse optional automatisch zerstoeren.
-#
-# BENOETIGTE DATEIEN
-# ------------------
-# - ./scoring_engine.py
-#   Bewertet Vast-Angebote und erzeugt tab-separierte Ergebniszeilen.
-#
-# - ./params.json
-#   Eingabeparameter fuer scoring_engine.py.
-#
-# BENOETIGTE TOOLS
-# ----------------
-# - bash
-# - python3
-# - awk
-# - mktemp
-# - Vast.ai CLI: entweder `vastai` oder `vast`
-#
-# WICHTIGE UMGEBUNGSVARIABLEN
-# --------------------------
-# - QUERY
-#   Vast-Angebotsfilter fuer `search offers`.
-#
-# - GPU_FILTER
-#   Regex/Filter fuer erlaubte GPU-Modelle in der Scoring-Logik.
-#
-# - RESULTS
-#   Maximale Anzahl an Ergebnissen, die angezeigt werden.
-#
-# - TEMPLATE_HASH
-#   Hash-ID des Vast-Templates fuer `create instance --template_hash`.
-#
-# - VALIDATE_TEMPLATE_HASH
-#   1 = Template-Hash vor Buchung pruefen
-#   0 = keine Vorab-Pruefung
-#
-# - STRICT_TEMPLATE_VALIDATION
-#   1 = Abbruch, wenn Template nicht bestaetigt werden kann
-#   0 = Warnung, aber Fortsetzung
-#
-# - DISK_GB
-#   Expliziter Disk-Override in GB. Leer = kein `--disk`, Template-Default
-#   bleibt aktiv.
-#
-# - EXPECTED_TEMPLATE_DISK_GB
-#   Erwartete Mindestgroesse der Storage, die nach Buchung erreicht sein soll.
-#
-# - MIN_DISK_GB
-#   Sicherheitsgrenze fuer explizit gesetztes DISK_GB.
-#
-# - ENFORCE_DISK_GUARD
-#   1 = hart abbrechen, wenn DISK_GB unter MIN_DISK_GB liegt
-#   0 = nur warnen
-#
-# - POSTCHECK_INSTANCE
-#   1 = erzeugte Instanz nach der Buchung pruefen
-#   0 = kein Nachcheck
-#
-# - AUTO_DESTROY_BAD_STORAGE
-#   1 = Instanz bei zu kleiner Storage automatisch zerstoeren
-#   0 = nur Fehler melden
-#
-# - REQUIRE_EXPLICIT_CONFIRM
-#   1 = vor Buchung interaktive Bestaetigung erzwingen
-#   0 = ohne Zusatzbestaetigung fortfahren
-#
-# - STATE_FILE
-#   Datei, in die die erzeugte Instanz-ID geschrieben wird.
-#
-# - DEBUG
-#   true = aktiviert `set -x` fuer Bash-Trace.
-#
-# PROGRAMMABLAUF BEI BUCHUNG
-# --------------------------
-# 1. Template wird optional validiert.
-# 2. Nutzer bestaetigt Offer, Modell und Template.
-# 3. Instanz wird mit `create instance` erstellt.
-# 4. Rueckgabe wird auf neue Contract-/Instanz-ID geparst.
-# 5. Instanz-ID wird in STATE_FILE gespeichert.
-# 6. Erzeugte Instanz wird auf Storage-Groesse geprueft.
-# 7. Bei Untergroesse kann die Instanz automatisch zerstoert werden.
-#
-# AUSGABEN
-# --------
-# Das Script erzeugt:
-# - eine tabellarische Uebersicht der bestbewerteten Vast-Angebote;
-# - farbliche Kennzeichnung fuer Top Score und Best Test;
-# - Logging fuer Validierung, Buchung und Post-Check;
-# - optional einen gespeicherten Zustand in STATE_FILE.
-#
-# EXIT-VERHALTEN
-# --------------
-# - Exit 0: Erfolg oder bewusst abgebrochene Auswahl.
-# - Exit 1: Fehler bei Validierung, Buchung oder Sicherheitspruefung.
-# - Exit 2: Keine passenden Angebote nach Filterung vorhanden.
-#
-# BEISPIELE
-# ---------
-# Nur Angebote anzeigen:
-#   bash find-cheapest-instance.sh
-#
-# Testmodus:
-#   bash find-cheapest-instance.sh --test
-#
-# Dry-Run fuer Buchung:
-#   bash find-cheapest-instance.sh --book 1 --dry-run
-#
-# Angebot Nr. 2 wirklich buchen:
-#   bash find-cheapest-instance.sh --book 2
-#
-# Buchung mit explizitem Disk-Override:
-#   DISK_GB=100 bash find-cheapest-instance.sh --book 1
-#
-# Bei alter CLI Template-Pruefung notfalls nur warnen:
-#   STRICT_TEMPLATE_VALIDATION=0 bash find-cheapest-instance.sh --book 1
-#
-# DEBUG-MODUS:
-#   DEBUG=true bash find-cheapest-instance.sh --book
-#
-# WARTUNGSHINWEIS
-# ---------------
-# Bei Aenderungen an Vast.ai CLI-Ausgaben oder JSON-Strukturen sollten vor allem
-# diese Bereiche erneut geprueft werden:
-# - validate_template_hash
-# - extract_new_contract_id
-# - postcheck_instance_storage
-# - extract_storage_from_json
-#
-# DOKUMENTATIONSSTANDARD
-# ---------------------
-# Dieses Script verwendet bewusst einen ausfuehrlichen Datei-Header, damit
-# Zweck, Risiken, Eingaben und Sicherheitsmechanismen direkt am Dateianfang
-# sichtbar sind. Ein striktes Fehlerhandling mit zentralem Cleanup reduziert
-# Nebenwirkungen bei Fehlschlaegen. [web:491][web:587]
+# Einzelne Instanzen koennen per `show instance --raw` abgefragt werden, waehrend
+# `show instances --raw` eine Liste liefert. Diese Fassung verwendet beide Wege
+# und speichert Debug-Ausgaben bei Parse-Problemen. [web:587][web:579]
 #
 # =============================================================================
 
@@ -188,26 +42,27 @@ export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 [[ "${DEBUG:-}" == "true" ]] && set -x
 
-VERSION="${VERSION:-2026-06-04.13}"
+VERSION="${VERSION:-2026-06-04.14}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
 
-DISK_GB="${DISK_GB:-}"
 EXPECTED_TEMPLATE_DISK_GB="${EXPECTED_TEMPLATE_DISK_GB:-80}"
+DISK_GB="${DISK_GB:-$EXPECTED_TEMPLATE_DISK_GB}"
 MIN_DISK_GB="${MIN_DISK_GB:-80}"
 ENFORCE_DISK_GUARD="${ENFORCE_DISK_GUARD:-1}"
 REQUIRE_EXPLICIT_CONFIRM="${REQUIRE_EXPLICIT_CONFIRM:-1}"
 POSTCHECK_INSTANCE="${POSTCHECK_INSTANCE:-1}"
 AUTO_DESTROY_BAD_STORAGE="${AUTO_DESTROY_BAD_STORAGE:-1}"
 STRICT_TEMPLATE_VALIDATION="${STRICT_TEMPLATE_VALIDATION:-1}"
+VALIDATE_TEMPLATE_HASH="${VALIDATE_TEMPLATE_HASH:-1}"
 
 TEMPLATE_HASH="${TEMPLATE_HASH:-47911bdece931900f38147222e3765a8}"
 MODEL_GB="${MODEL_GB:-20}"
 SESSION_HOURS="${SESSION_HOURS:-3}"
 PARAMS_JSON="${PARAMS_JSON:-./params.json}"
 STATE_FILE="${STATE_FILE:-/home/werner/github-scripts/.current_instance}"
-VALIDATE_TEMPLATE_HASH="${VALIDATE_TEMPLATE_HASH:-1}"
+POSTCHECK_DEBUG_DIR="${POSTCHECK_DEBUG_DIR:-/tmp/vast_postcheck_debug}"
 
 tmp_json=""
 LAST_BOOKED_INSTANCE_ID=""
@@ -258,6 +113,14 @@ ensure_inputs() {
 
 json_escape() {
     python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+compare_lt() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+a=float(sys.argv[1]); b=float(sys.argv[2])
+raise SystemExit(0 if a < b else 1)
+PY
 }
 
 validate_template_hash() {
@@ -327,12 +190,7 @@ extract_new_contract_id() {
 }
 
 validate_disk_value_if_set() {
-    if [[ -z "${DISK_GB:-}" ]]; then
-        log "DISK_GB ist leer: Es wird kein --disk uebergeben, Template-Default bleibt aktiv."
-        return 0
-    fi
-
-    [[ "$DISK_GB" =~ ^[0-9]+$ ]] || die "DISK_GB muss eine ganze Zahl sein oder leer. Aktuell: $DISK_GB"
+    [[ "$DISK_GB" =~ ^[0-9]+$ ]] || die "DISK_GB muss eine ganze Zahl sein. Aktuell: $DISK_GB"
 
     if (( DISK_GB < MIN_DISK_GB )); then
         if [[ "$ENFORCE_DISK_GUARD" == "1" ]]; then
@@ -343,8 +201,10 @@ validate_disk_value_if_set() {
     fi
 
     if (( DISK_GB < EXPECTED_TEMPLATE_DISK_GB )); then
-        warn "DISK_GB=$DISK_GB ist kleiner als EXPECTED_TEMPLATE_DISK_GB=$EXPECTED_TEMPLATE_DISK_GB und kann das Template nach unten ueberschreiben."
+        warn "DISK_GB=$DISK_GB ist kleiner als EXPECTED_TEMPLATE_DISK_GB=$EXPECTED_TEMPLATE_DISK_GB."
     fi
+
+    ok "Explizite Disk-Groesse fuer Create-Request aktiv: ${DISK_GB} GB"
 }
 
 print_booking_summary() {
@@ -357,11 +217,7 @@ print_booking_summary() {
     echo "  Modell:                   $model_name"
     echo "  Template-Hash:            $TEMPLATE_HASH"
     echo "  Erwartete Template-Disk:  ${EXPECTED_TEMPLATE_DISK_GB} GB"
-    if [[ -n "${DISK_GB:-}" ]]; then
-        echo "  Expliziter Disk-Override: ${DISK_GB} GB"
-    else
-        echo "  Expliziter Disk-Override: <kein Override, Template-Default aktiv>"
-    fi
+    echo "  Expliziter Disk-Override: ${DISK_GB} GB"
     echo "  Disk-Guard Minimum:       ${MIN_DISK_GB} GB"
     echo "  Query:                    $QUERY"
     echo "-----------------------------------------------------------------------------------------"
@@ -379,7 +235,7 @@ confirm_booking() {
         [[ "$conf" == [yY] ]] || { echo "Abbruch."; exit 0; }
     fi
 
-    read -r -p "Buchung $target_id ($model_name) mit Template $TEMPLATE_HASH bestaetigen [y/N]: " conf
+    read -r -p "Buchung $target_id ($model_name) mit Template $TEMPLATE_HASH und --disk $DISK_GB bestaetigen [y/N]: " conf
     [[ "$conf" == [yY] ]] || { echo "Abbruch."; exit 0; }
 }
 
@@ -400,67 +256,98 @@ get_instance_row() {
     '
 }
 
+save_postcheck_debug() {
+    local instance_id="$1"
+    local single_raw="${2:-}"
+    local list_raw="${3:-}"
+    local row_raw="${4:-}"
+
+    mkdir -p "$POSTCHECK_DEBUG_DIR"
+    [[ -n "$single_raw" ]] && printf '%s\n' "$single_raw" > "${POSTCHECK_DEBUG_DIR}/instance_${instance_id}_single_raw.txt"
+    [[ -n "$list_raw" ]] && printf '%s\n' "$list_raw" > "${POSTCHECK_DEBUG_DIR}/instance_${instance_id}_list_raw.txt"
+    [[ -n "$row_raw" ]] && printf '%s\n' "$row_raw" > "${POSTCHECK_DEBUG_DIR}/instance_${instance_id}_table_row.txt"
+}
+
 extract_storage_from_json() {
     local raw_json="$1"
     local instance_id="${2:-}"
 
     python3 - "$instance_id" <<'PY' <<< "$raw_json"
-import json, sys
+import ast, json, sys
 
 instance_id = str(sys.argv[1] or "")
 raw = sys.stdin.read().strip()
 if not raw:
     raise SystemExit(1)
 
-try:
-    data = json.loads(raw)
-except Exception:
+data = None
+
+for parser in (
+    lambda s: json.loads(s),
+    lambda s: ast.literal_eval(s),
+):
+    try:
+        data = parser(raw)
+        break
+    except Exception:
+        pass
+
+if data is None:
     raise SystemExit(1)
 
-def normalize_items(x):
+def to_items(x):
     if isinstance(x, list):
         return x
     if isinstance(x, dict):
-        if instance_id:
+        if instance_id and any(k in x for k in ("id", "contract_id", "new_contract")):
             return [x]
         for key in ("instances", "results", "data"):
             v = x.get(key)
             if isinstance(v, list):
                 return v
+        return [x]
     return []
+
+def item_id(item):
+    for key in ("id", "contract_id", "new_contract", "instance_id"):
+        if key in item and item.get(key) is not None:
+            return str(item.get(key))
+    return ""
+
+def nested_dicts(item):
+    out = [item]
+    for key in ("machine", "instance", "offer", "ask_contract", "contract"):
+        v = item.get(key)
+        if isinstance(v, dict):
+            out.append(v)
+    return out
 
 def candidate_values(item):
     vals = []
-    vals.extend([
-        item.get("disk_space"),
-        item.get("disk"),
-        item.get("disk_gb"),
-        item.get("storage"),
-        item.get("storage_gb"),
-        item.get("disk_size"),
-        item.get("allocated_storage"),
-    ])
-    machine = item.get("machine") or {}
-    if isinstance(machine, dict):
+    for obj in nested_dicts(item):
         vals.extend([
-            machine.get("disk_space"),
-            machine.get("disk"),
-            machine.get("storage"),
-            machine.get("disk_size"),
+            obj.get("disk_space"),
+            obj.get("disk"),
+            obj.get("disk_gb"),
+            obj.get("storage"),
+            obj.get("storage_gb"),
+            obj.get("disk_size"),
+            obj.get("allocated_storage"),
+            obj.get("image_disk_size"),
+            obj.get("container_disk"),
+            obj.get("container_disk_gb"),
         ])
     return vals
 
-items = normalize_items(data)
+items = to_items(data)
 
 for item in items:
     if not isinstance(item, dict):
         continue
-
     if instance_id:
-        iid = str(item.get("id", item.get("contract_id", item.get("new_contract", ""))))
+        iid = item_id(item)
         if iid != instance_id:
             continue
-
     for val in candidate_values(item):
         if val is None:
             continue
@@ -476,21 +363,23 @@ PY
 
 extract_storage_from_row() {
     local row="$1"
-    awk '{print $10}' <<< "$row" | tr -dc '0-9.'
+    awk '
+        {
+            for (i=1; i<=NF; i++) {
+                if ($i ~ /^[0-9]+(\.[0-9]+)?GB$/) {
+                    gsub(/GB/, "", $i)
+                    print $i
+                    exit
+                }
+            }
+        }
+    ' <<< "$row"
 }
 
 destroy_bad_instance() {
     local instance_id="$1"
     warn "Zerstoere Instanz $instance_id wegen ungueltiger Storage-Groesse..."
     vast_cmd destroy instance "$instance_id" >/dev/null 2>&1 || warn "Destroy fuer Instanz $instance_id konnte nicht bestaetigt werden."
-}
-
-compare_lt() {
-    python3 - "$1" "$2" <<'PY'
-import sys
-a=float(sys.argv[1]); b=float(sys.argv[2])
-raise SystemExit(0 if a < b else 1)
-PY
 }
 
 postcheck_instance_storage() {
@@ -500,21 +389,22 @@ postcheck_instance_storage() {
     echo ""
     log "Versuche Nachcheck der erzeugten Instanz-ID $instance_id ..."
 
-    local raw_json=""
+    local single_raw=""
+    local list_raw=""
     local row=""
     local storage_val=""
     local source_used=""
 
-    if raw_json="$(get_single_instance_raw_json "$instance_id")"; then
-        if storage_val="$(extract_storage_from_json "$raw_json" "$instance_id" 2>/dev/null)"; then
+    if single_raw="$(get_single_instance_raw_json "$instance_id")"; then
+        if storage_val="$(extract_storage_from_json "$single_raw" "$instance_id" 2>/dev/null)"; then
             source_used="show instance --raw"
             log "Storage aus gezieltem Instance-JSON extrahiert: ${storage_val} GB"
         fi
     fi
 
     if [[ -z "$storage_val" ]]; then
-        if raw_json="$(get_instances_raw_json)"; then
-            if storage_val="$(extract_storage_from_json "$raw_json" "$instance_id" 2>/dev/null)"; then
+        if list_raw="$(get_instances_raw_json)"; then
+            if storage_val="$(extract_storage_from_json "$list_raw" "$instance_id" 2>/dev/null)"; then
                 source_used="show instances --raw"
                 log "Storage aus Instanzlisten-JSON extrahiert: ${storage_val} GB"
             fi
@@ -524,13 +414,16 @@ postcheck_instance_storage() {
     if [[ -z "$storage_val" ]]; then
         if row="$(get_instance_row "$instance_id")"; then
             printf '%s\n' "$row"
-            storage_val="$(extract_storage_from_row "$row")"
-            [[ -n "$storage_val" ]] && source_used="show instances table"
+            if storage_val="$(extract_storage_from_row "$row")"; then
+                [[ -n "$storage_val" ]] && source_used="show instances table"
+            fi
         fi
     fi
 
     if [[ -z "$storage_val" ]]; then
+        save_postcheck_debug "$instance_id" "$single_raw" "$list_raw" "$row"
         warn "Storage-Wert konnte aus dem Post-Check nicht extrahiert werden."
+        warn "Debug-Dateien geschrieben nach: $POSTCHECK_DEBUG_DIR"
         return 0
     fi
 
@@ -558,7 +451,6 @@ main() {
     local line=""
     local raw_line=""
     local geo_field=""
-    local i=0
     local cheapest_idx=-1
     local min_test="999999999"
     local j=0
@@ -594,11 +486,7 @@ main() {
     echo "Query: $QUERY"
     echo "Modus: Entkoppelte Inferenz mit automatisierter Status-Erfassung"
     echo "Template-Hash: $TEMPLATE_HASH"
-    if [[ -n "${DISK_GB:-}" ]]; then
-        echo "Disk-Override: $DISK_GB GB"
-    else
-        echo "Disk-Override: <kein Override, Template-Default>"
-    fi
+    echo "Disk-Override: $DISK_GB GB (explizit erzwungen)"
     echo "Expected Template Disk: $EXPECTED_TEMPLATE_DISK_GB GB"
     echo "========================================================================================="
 
@@ -681,7 +569,6 @@ main() {
         fi
 
         rows+=("$id|$model")
-        i=$((i + 1))
     done
 
     if [[ ${#rows[@]} -eq 0 ]]; then
@@ -712,10 +599,7 @@ main() {
         confirm_booking "$target_id" "$model_name"
 
         local create_args=()
-        create_args=(create instance "$target_id" --template_hash "$TEMPLATE_HASH")
-        if [[ -n "${DISK_GB:-}" ]]; then
-            create_args+=(--disk "$DISK_GB")
-        fi
+        create_args=(create instance "$target_id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB")
 
         echo ""
         echo "[INFO] Finaler Vast-Befehl:"
