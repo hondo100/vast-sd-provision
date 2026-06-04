@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.07
+# find-cheapest-instance.sh | Version: 2026-06-04.08
 # =============================================================================
 #
 # ZWECK
@@ -10,57 +10,26 @@
 # scoring_engine.py, zeigt die bestplatzierten Ergebnisse tabellarisch an und
 # kann optional direkt eine Instanz buchen.
 #
-# Das Script ist fuer einen Ablauf ausgelegt, bei dem:
-# 1. ein Rohsuchlauf ueber Vast.ai erfolgt,
-# 2. die Rohdaten an scoring_engine.py uebergeben werden,
-# 3. die besten Treffer formatiert angezeigt werden,
-# 4. optional eine Instanz mit einem bekannten Template-Hash gebucht wird,
-# 5. die neu erzeugte Instanz-ID lokal gespeichert wird.
+# Diese Fassung enthaelt zusaetzliche Schutzlogik gegen versehentlich zu kleine
+# Root-Disk-Konfigurationen beim Buchen:
+# - kein gefaehrlicher Default "DISK_GB=15" mehr;
+# - --disk wird nur gesendet, wenn explizit gesetzt;
+# - Mindest-Disk-Grenze fuer Buchungen;
+# - deutliche Sicherheitswarnung bei kleinem Disk-Wert;
+# - zusammengefasste Bestaetigungsanzeige vor create instance;
+# - optionaler Nachcheck der erzeugten Instanzdaten.
 #
-# WICHTIG ZUM TEMPLATE
-# --------------------
-# Fuer die Buchung ist kein Template-Name erforderlich. Vast.ai unterstuetzt
-# die Erstellung einer Instanz direkt ueber einen Template-Hash
-# (--template_hash / hash_id). Das Template liefert die benoetigten Default-
-# Werte, sodass kein menschenlesbarer Name bekannt sein muss.
-#
-# WICHTIGER HINWEIS ZUR TEMPLATE-PRUEFUNG
-# --------------------------------------
-# Vast.ai unterstuetzt das direkte Erzeugen einer Instanz ueber
-#   vastai create instance <offer_id> --template_hash <hash>
-# wobei der Template-Hash als maßgeblicher Buchungsparameter dient.
-#
-# Zusaetzlich bietet Vast.ai mit
-#   vastai search templates
-# eine Suchfunktion fuer Templates an. Diese Suche ist jedoch nicht in jedem
-# praktischen Fall ein verlaesslicher Vorab-Check dafuer, ob ein spaeterer
-# create-instance-Aufruf mit --template_hash erfolgreich sein wird.
-#
-# Hintergrund:
-# - Laut Vast-Dokumentation koennen Templates ueber ihre hash_id verwendet
-#   werden.
-# - Laut Vast-Dokumentation unterstuetzt create instance die Option
-#   --template_hash direkt.
-# - Laut Vast-Dokumentation liefert search templates Suchergebnisse ueber
-#   eigene und oeffentlich geteilte Templates.
+# WICHTIG ZU DISK UND TEMPLATE
+# ----------------------------
+# Vast.ai erlaubt die Erstellung einer Instanz ueber Template-Hash und zusaetz-
+# liche create-instance-Optionen. Das Template liefert Standardwerte; explizit
+# gesetzte Optionen wie --disk koennen diese Defaults ueberschreiben. [web:363]
 #
 # Daraus folgt fuer dieses Script:
-# - Die Template-Suche wird nur als weiche Zusatzpruefung behandelt.
-# - Wenn search templates den Hash nicht bestaetigen kann, wird dies als
-#   Warnung protokolliert, aber nicht mehr als harter Abbruch gewertet.
-# - Die eigentliche Wahrheit liefert der reale Buchungsversuch mit
-#   create instance --template_hash.
-#
-# ROBUSTHEIT
-# ----------
-# Diese Version verbessert gegenueber einer einfacheren Fassung vor allem:
-# - sichere Temp-Dateien statt fester /tmp-Pfade;
-# - Vorab-Pruefung von CLI und Authentifizierung;
-# - optionale weiche Validierung des Template-Hashs vor der Buchung;
-# - defensive Behandlung leerer oder fehlerhafter Suchergebnisse;
-# - robustere Extraktion der neu erzeugten Instanz-ID aus CLI-Ausgaben;
-# - saubere Trennung von Suchphase, Bewertungsphase und Buchungsphase;
-# - sicherer EXIT-Trap auch bei set -u / nounset.
+# - Wenn du den im Template hinterlegten Container-Size-Wert verwenden willst,
+#   darfst du --disk nicht blind immer mitsenden. [web:363]
+# - Disk-Groesse ist nach der Erstellung nicht mehr aenderbar; bei zu wenig
+#   Platz muss neu gebucht werden. [web:374][web:453]
 #
 # DATEIEN
 # -------
@@ -74,112 +43,76 @@
 #
 # STEUERUNGSVARIABLEN
 # -------------------
-# Diese Variablen koennen direkt im Script oder per Environment angepasst
-# werden.
-#
 # Suche und Anzeige:
 # - VERSION
-#   Script-Version fuer Logging.
-#
 # - RESULTS
-#   Maximale Anzahl ausgegebener Treffer.
-#
 # - QUERY
-#   Vast.ai Suchquery fuer offers. Diese Query wird direkt an
-#   "vastai search offers" uebergeben.
-#
 # - GPU_FILTER
-#   Regex-Filter, der an scoring_engine.py durchgereicht wird.
-#
 # - MODEL_GB
-#   Geschaetzte Modellgroesse in GiB fuer die Bewertung.
-#
 # - SESSION_HOURS
-#   Erwartete Laufzeit der Session in Stunden fuer die Bewertung.
-#
 # - PARAMS_JSON
-#   Parameterdatei fuer scoring_engine.py.
 #
 # Buchung:
 # - TEMPLATE_HASH
 #   Hash-ID des zu verwendenden Vast.ai Templates.
 #
 # - DISK_GB
-#   Gewuenschte Disk-Groesse fuer die Instanz.
+#   Optionaler expliziter Override fuer --disk.
+#   Leer = kein --disk mitsenden, Template-Default verwenden.
+#
+# - EXPECTED_TEMPLATE_DISK_GB
+#   Erwartete Container-Groesse des Templates, nur fuer Sicherheitspruefungen
+#   und Anzeige. Diese Variable wird nicht an Vast.ai gesendet.
+#
+# - MIN_DISK_GB
+#   Harte Untergrenze fuer Buchungen. Wenn DISK_GB explizit gesetzt ist und
+#   kleiner als MIN_DISK_GB ist, wird die Buchung abgebrochen.
+#
+# - ENFORCE_DISK_GUARD
+#   1 = Sicherheitsabbruch bei zu kleinem explizitem DISK_GB
+#   0 = nur Warnung
+#
+# - REQUIRE_EXPLICIT_CONFIRM
+#   1 = zusaetzliche Bestaetigung mit Parametern vor create instance
+#   0 = nur normale y/N-Bestaetigung
+#
+# - POSTCHECK_INSTANCE
+#   1 = nach Buchung versuchen, die erzeugte Instanz per CLI anzuzeigen
+#   0 = kein Nachcheck
 #
 # - STATE_FILE
 #   Datei, in die die neue Instanz-ID geschrieben wird.
 #
 # - VALIDATE_TEMPLATE_HASH
-#   1 = Template-Hash vor Buchung weich via "search templates" pruefen.
-#   0 = keine Vorab-Pruefung.
+#   1 = Template-Hash vor Buchung weich via "search templates" pruefen
+#   0 = keine Vorab-Pruefung
 #
 # - TEMPLATE_QUERY_MODE
-#   Art der Hash-Pruefung. Standard ist ein einfacher Query-Ausdruck mit hash_id.
+#   Art der Hash-Pruefung
 #
 # MODI UND ARGUMENTE
 # ------------------
-# Das Script kennt diese Optionen:
-#
 # --test
-#   Ueberspringt die echte Vast-Suche und arbeitet mit leerer/extern
-#   vorbereiteter Testdatenbasis. Nuetzlich fuer Parser- und Format-Tests.
-#
 # --dry-run
-#   Simuliert die Buchung, fuehrt aber kein "create instance" aus.
-#
 # --book [NUM]
-#   Startet den Buchungsfluss. Wenn NUM angegeben ist, wird direkt der
-#   entsprechende Listenplatz verwendet; sonst erfolgt eine Rueckfrage.
-#
-# HEURISTIKEN
-# -----------
-# - China wird bereits in der Vast-Query ausgeschlossen:
-#     geolocation notin [CN]
-# - Zusaetzlich werden lokal Zeilen verworfen, deren Geo-Feld nur aus ","
-#   besteht, da solche Faelle in der Praxis als unbrauchbare/inkonsistente
-#   Geo-Daten behandelt werden.
-#
-# ABLAUF
-# ------
-# 1. CLI und Python pruefen.
-# 2. Vast-Authentifizierung per "show user" testen.
-# 3. scoring_engine.py und params.json pruefen.
-# 4. Angebotsdaten via "search offers --raw" laden.
-# 5. Rohdaten an scoring_engine.py uebergeben.
-# 6. Ergebniszeilen lokal nach Geo-Heuristik filtern.
-# 7. Tabellenansicht erzeugen und Top-Angebote markieren.
-# 8. Optional weiche Template-Pruefung ausfuehren.
-# 9. Optional Buchung ausfuehren und neue Instanz-ID sichern.
-# 10. Temp-Dateien robust bereinigen.
-#
-# BEISPIELE
-# ---------
-# Nur Suche und Anzeige:
-#   bash find-cheapest-instance.sh
-#
-# Buchungsdialog starten:
-#   bash find-cheapest-instance.sh --book
-#
-# Direkt Platz 2 buchen:
-#   bash find-cheapest-instance.sh --book 2
-#
-# Buchung nur simulieren:
-#   bash find-cheapest-instance.sh --book 1 --dry-run
-#
-# Template-Vorabpruefung deaktivieren:
-#   VALIDATE_TEMPLATE_HASH=0 bash find-cheapest-instance.sh --book
 #
 # =============================================================================
 
 export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 
-VERSION="${VERSION:-2026-06-04.06}"
+VERSION="${VERSION:-2026-06-04.08}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
-DISK_GB="${DISK_GB:-15}"
+
+DISK_GB="${DISK_GB:-}"
+EXPECTED_TEMPLATE_DISK_GB="${EXPECTED_TEMPLATE_DISK_GB:-80}"
+MIN_DISK_GB="${MIN_DISK_GB:-80}"
+ENFORCE_DISK_GUARD="${ENFORCE_DISK_GUARD:-1}"
+REQUIRE_EXPLICIT_CONFIRM="${REQUIRE_EXPLICIT_CONFIRM:-1}"
+POSTCHECK_INSTANCE="${POSTCHECK_INSTANCE:-1}"
+
 TEMPLATE_HASH="${TEMPLATE_HASH:-47911bdece931900f38147222e3765a8}"
 MODEL_GB="${MODEL_GB:-20}"
 SESSION_HOURS="${SESSION_HOURS:-3}"
@@ -265,6 +198,83 @@ extract_new_contract_id() {
     printf '%s' "$extracted"
 }
 
+validate_disk_value_if_set() {
+    if [[ -z "${DISK_GB:-}" ]]; then
+        log "DISK_GB ist leer: Es wird kein --disk uebergeben, Template-Default bleibt aktiv."
+        return 0
+    fi
+
+    [[ "$DISK_GB" =~ ^[0-9]+$ ]] || die "DISK_GB muss eine ganze Zahl sein oder leer. Aktuell: $DISK_GB"
+
+    if (( DISK_GB < MIN_DISK_GB )); then
+        if [[ "$ENFORCE_DISK_GUARD" == "1" ]]; then
+            die "DISK_GB=$DISK_GB ist kleiner als MIN_DISK_GB=$MIN_DISK_GB. Buchung aus Sicherheitsgruenden abgebrochen."
+        else
+            warn "DISK_GB=$DISK_GB ist kleiner als MIN_DISK_GB=$MIN_DISK_GB."
+        fi
+    fi
+
+    if (( DISK_GB < EXPECTED_TEMPLATE_DISK_GB )); then
+        warn "DISK_GB=$DISK_GB ist kleiner als EXPECTED_TEMPLATE_DISK_GB=$EXPECTED_TEMPLATE_DISK_GB und kann das Template nach unten ueberschreiben."
+    fi
+}
+
+print_booking_summary() {
+    local target_id="$1"
+    local model_name="$2"
+
+    echo "-----------------------------------------------------------------------------------------"
+    echo "Buchungs-Zusammenfassung"
+    echo "  Offer-ID:                 $target_id"
+    echo "  Modell:                   $model_name"
+    echo "  Template-Hash:            $TEMPLATE_HASH"
+    echo "  Erwartete Template-Disk:  ${EXPECTED_TEMPLATE_DISK_GB} GB"
+    if [[ -n "${DISK_GB:-}" ]]; then
+        echo "  Expliziter Disk-Override: ${DISK_GB} GB"
+    else
+        echo "  Expliziter Disk-Override: <kein Override, Template-Default aktiv>"
+    fi
+    echo "  Disk-Guard Minimum:       ${MIN_DISK_GB} GB"
+    echo "  Query:                    $QUERY"
+    echo "-----------------------------------------------------------------------------------------"
+}
+
+confirm_booking() {
+    local target_id="$1"
+    local model_name="$2"
+    local conf=""
+
+    print_booking_summary "$target_id" "$model_name"
+
+    if [[ "$REQUIRE_EXPLICIT_CONFIRM" == "1" ]]; then
+        read -r -p "Diese Werte wirklich fuer create instance verwenden? [y/N]: " conf
+        [[ "$conf" == [yY] ]] || { echo "Abbruch."; exit 0; }
+    fi
+
+    read -r -p "Buchung $target_id ($model_name) mit Template $TEMPLATE_HASH bestaetigen [y/N]: " conf
+    [[ "$conf" == [yY] ]] || { echo "Abbruch."; exit 0; }
+}
+
+show_instance_postcheck() {
+    local instance_id="$1"
+    [[ "$POSTCHECK_INSTANCE" == "1" ]] || return 0
+
+    echo ""
+    log "Versuche Nachcheck der erzeugten Instanz-ID $instance_id ..."
+    if vast_cmd show instance "$instance_id" 2>/dev/null; then
+        ok "Post-Check erfolgreich: Instanzdaten wurden abgefragt."
+        return 0
+    fi
+
+    if vast_cmd show instances 2>/dev/null | grep -q "$instance_id"; then
+        ok "Post-Check erfolgreich: Instanz-ID erscheint in 'show instances'."
+        return 0
+    fi
+
+    warn "Post-Check konnte die Instanz nicht eindeutig bestaetigen. Bitte manuell via 'vastai show instances' pruefen."
+    return 0
+}
+
 main() {
     local DO_BOOK=0
     local BOOK_INDEX=""
@@ -302,12 +312,19 @@ main() {
     require_cmd mktemp
     check_auth
     ensure_inputs
+    validate_disk_value_if_set
 
     echo "========================================================================================="
     echo "Skript-Version: $VERSION | Filter: $GPU_FILTER"
     echo "Query: $QUERY"
     echo "Modus: Entkoppelte Inferenz mit automatisierter Status-Erfassung"
     echo "Template-Hash: $TEMPLATE_HASH"
+    if [[ -n "${DISK_GB:-}" ]]; then
+        echo "Disk-Override: $DISK_GB GB"
+    else
+        echo "Disk-Override: <kein Override, Template-Default>"
+    fi
+    echo "Expected Template Disk: $EXPECTED_TEMPLATE_DISK_GB GB"
     echo "========================================================================================="
 
     tmp_json="$(mktemp /tmp/vast_offers.XXXXXX.json)"
@@ -426,35 +443,40 @@ PY
 
         local sel="${rows[$idx]}"
         local target_id="${sel%|*}"
+        local model_name="${sel#*|}"
 
-        read -r -p "Buchung $target_id (${sel#*|}) mit Template $TEMPLATE_HASH bestaetigen [y/N]: " conf
-        if [[ "$conf" == [yY] ]]; then
-            echo "[PROZESS] Sende Buchungsbefehl an Vast.ai..."
+        confirm_booking "$target_id" "$model_name"
 
-            local book_output=""
-            local rc=0
+        echo "[PROZESS] Sende Buchungsbefehl an Vast.ai..."
 
-            book_output="$(vast_cmd create instance "$target_id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB" 2>&1)" || rc=$?
-            echo "$book_output"
+        local book_output=""
+        local rc=0
+        local create_args=()
 
-            if [[ $rc -ne 0 ]]; then
-                die "Buchung fehlgeschlagen."
-            fi
+        create_args=(create instance "$target_id" --template_hash "$TEMPLATE_HASH")
+        if [[ -n "${DISK_GB:-}" ]]; then
+            create_args+=(--disk "$DISK_GB")
+        fi
 
-            local extracted_id=""
-            extracted_id="$(extract_new_contract_id "$book_output")"
+        book_output="$(vast_cmd "${create_args[@]}" 2>&1)" || rc=$?
+        echo "$book_output"
 
-            if [[ -n "$extracted_id" ]]; then
-                mkdir -p "$(dirname "$STATE_FILE")"
-                echo "$extracted_id" > "$STATE_FILE"
-                ok "Instanz-ID $extracted_id wurde in $STATE_FILE gesichert."
-            else
-                warn "Instanz wurde moeglicherweise gestartet, aber die ID-Extraktion schlug fehl."
-                warn "Bitte pruefen Sie den Zustand manuell via 'vastai show instances'."
-                exit 1
-            fi
+        if [[ $rc -ne 0 ]]; then
+            die "Buchung fehlgeschlagen."
+        fi
+
+        local extracted_id=""
+        extracted_id="$(extract_new_contract_id "$book_output")"
+
+        if [[ -n "$extracted_id" ]]; then
+            mkdir -p "$(dirname "$STATE_FILE")"
+            echo "$extracted_id" > "$STATE_FILE"
+            ok "Instanz-ID $extracted_id wurde in $STATE_FILE gesichert."
+            show_instance_postcheck "$extracted_id"
         else
-            echo "Abbruch."
+            warn "Instanz wurde moeglicherweise gestartet, aber die ID-Extraktion schlug fehl."
+            warn "Bitte den Zustand manuell via 'vastai show instances' pruefen."
+            exit 1
         fi
     fi
 }
