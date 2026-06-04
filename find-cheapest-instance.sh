@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-04.08
+# find-cheapest-instance.sh | Version: 2026-06-04.09
 # =============================================================================
 #
 # ZWECK
@@ -10,98 +10,28 @@
 # scoring_engine.py, zeigt die bestplatzierten Ergebnisse tabellarisch an und
 # kann optional direkt eine Instanz buchen.
 #
-# Diese Fassung enthaelt zusaetzliche Schutzlogik gegen versehentlich zu kleine
-# Root-Disk-Konfigurationen beim Buchen:
-# - kein gefaehrlicher Default "DISK_GB=15" mehr;
-# - --disk wird nur gesendet, wenn explizit gesetzt;
-# - Mindest-Disk-Grenze fuer Buchungen;
-# - deutliche Sicherheitswarnung bei kleinem Disk-Wert;
-# - zusammengefasste Bestaetigungsanzeige vor create instance;
-# - optionaler Nachcheck der erzeugten Instanzdaten.
+# Diese Fassung haertet den Buchungsfluss speziell gegen falsch uebernommene
+# Template-Storage-Werte:
+# - kein impliziter Disk-Override;
+# - Sicherheitspruefung fuer explizites DISK_GB;
+# - harter Post-Check der real erzeugten Instanz;
+# - automatische Zerstoerung der Instanz bei zu kleiner Storage-Groesse;
+# - Fehler, wenn der Template-Hash vorab nicht bestaetigt werden kann und
+#   STRICT_TEMPLATE_VALIDATION=1 gesetzt ist.
 #
-# WICHTIG ZU DISK UND TEMPLATE
-# ----------------------------
-# Vast.ai erlaubt die Erstellung einer Instanz ueber Template-Hash und zusaetz-
-# liche create-instance-Optionen. Das Template liefert Standardwerte; explizit
-# gesetzte Optionen wie --disk koennen diese Defaults ueberschreiben. [web:363]
-#
-# Daraus folgt fuer dieses Script:
-# - Wenn du den im Template hinterlegten Container-Size-Wert verwenden willst,
-#   darfst du --disk nicht blind immer mitsenden. [web:363]
-# - Disk-Groesse ist nach der Erstellung nicht mehr aenderbar; bei zu wenig
-#   Platz muss neu gebucht werden. [web:374][web:453]
-#
-# DATEIEN
+# WICHTIG
 # -------
-# Standardmaessig werden diese lokalen Dateien verwendet:
-# - PARAMS_JSON: Eingabe fuer scoring_engine.py
-# - STATE_FILE:  Ziel fuer die gebuchte Instanz-ID
-#
-# Externe lokale Dateien:
-# - ./scoring_engine.py muss vorhanden und ausfuehrbar via python3 sein
-# - ./params.json sollte vorhanden sein, sofern scoring_engine.py dies erwartet
-#
-# STEUERUNGSVARIABLEN
-# -------------------
-# Suche und Anzeige:
-# - VERSION
-# - RESULTS
-# - QUERY
-# - GPU_FILTER
-# - MODEL_GB
-# - SESSION_HOURS
-# - PARAMS_JSON
-#
-# Buchung:
-# - TEMPLATE_HASH
-#   Hash-ID des zu verwendenden Vast.ai Templates.
-#
-# - DISK_GB
-#   Optionaler expliziter Override fuer --disk.
-#   Leer = kein --disk mitsenden, Template-Default verwenden.
-#
-# - EXPECTED_TEMPLATE_DISK_GB
-#   Erwartete Container-Groesse des Templates, nur fuer Sicherheitspruefungen
-#   und Anzeige. Diese Variable wird nicht an Vast.ai gesendet.
-#
-# - MIN_DISK_GB
-#   Harte Untergrenze fuer Buchungen. Wenn DISK_GB explizit gesetzt ist und
-#   kleiner als MIN_DISK_GB ist, wird die Buchung abgebrochen.
-#
-# - ENFORCE_DISK_GUARD
-#   1 = Sicherheitsabbruch bei zu kleinem explizitem DISK_GB
-#   0 = nur Warnung
-#
-# - REQUIRE_EXPLICIT_CONFIRM
-#   1 = zusaetzliche Bestaetigung mit Parametern vor create instance
-#   0 = nur normale y/N-Bestaetigung
-#
-# - POSTCHECK_INSTANCE
-#   1 = nach Buchung versuchen, die erzeugte Instanz per CLI anzuzeigen
-#   0 = kein Nachcheck
-#
-# - STATE_FILE
-#   Datei, in die die neue Instanz-ID geschrieben wird.
-#
-# - VALIDATE_TEMPLATE_HASH
-#   1 = Template-Hash vor Buchung weich via "search templates" pruefen
-#   0 = keine Vorab-Pruefung
-#
-# - TEMPLATE_QUERY_MODE
-#   Art der Hash-Pruefung
-#
-# MODI UND ARGUMENTE
-# ------------------
-# --test
-# --dry-run
-# --book [NUM]
+# Vast-Templates liefern Default-Werte fuer die Instanzerstellung, koennen aber
+# durch explizite Optionen ueberschrieben werden. [web:375][web:363]
+# Disk/Storage ist nach der Erstellung nicht mehr aenderbar. [web:373][web:382]
+# Falsch erzeugte Instanzen sollten daher sofort wieder zerstoert werden. [web:470]
 #
 # =============================================================================
 
 export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 
-VERSION="${VERSION:-2026-06-04.08}"
+VERSION="${VERSION:-2026-06-04.09}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -112,6 +42,8 @@ MIN_DISK_GB="${MIN_DISK_GB:-80}"
 ENFORCE_DISK_GUARD="${ENFORCE_DISK_GUARD:-1}"
 REQUIRE_EXPLICIT_CONFIRM="${REQUIRE_EXPLICIT_CONFIRM:-1}"
 POSTCHECK_INSTANCE="${POSTCHECK_INSTANCE:-1}"
+AUTO_DESTROY_BAD_STORAGE="${AUTO_DESTROY_BAD_STORAGE:-1}"
+STRICT_TEMPLATE_VALIDATION="${STRICT_TEMPLATE_VALIDATION:-1}"
 
 TEMPLATE_HASH="${TEMPLATE_HASH:-47911bdece931900f38147222e3765a8}"
 MODEL_GB="${MODEL_GB:-20}"
@@ -171,11 +103,17 @@ validate_template_hash() {
     out="$(vast_cmd search templates --raw "$query" 2>&1)" || rc=$?
 
     if [[ $rc -ne 0 ]]; then
+        if [[ "$STRICT_TEMPLATE_VALIDATION" == "1" ]]; then
+            die "Template-Suche fehlgeschlagen. STRICT_TEMPLATE_VALIDATION=1. Query: $query | Ausgabe: $out"
+        fi
         warn "Template-Suche fehlgeschlagen, fahre trotzdem fort. Query: $query | Ausgabe: $out"
         return 0
     fi
 
     if [[ -z "$out" || "$out" == "[]" ]]; then
+        if [[ "$STRICT_TEMPLATE_VALIDATION" == "1" ]]; then
+            die "Template-Hash konnte per 'search templates' nicht bestaetigt werden: $TEMPLATE_HASH"
+        fi
         warn "Template-Hash konnte per 'search templates' nicht bestaetigt werden, verwende ihn trotzdem fuer create instance: $TEMPLATE_HASH"
         return 0
     fi
@@ -255,24 +193,66 @@ confirm_booking() {
     [[ "$conf" == [yY] ]] || { echo "Abbruch."; exit 0; }
 }
 
-show_instance_postcheck() {
+get_instance_row() {
+    local instance_id="$1"
+    vast_cmd show instances 2>/dev/null | awk -v id="$instance_id" '
+        $2 == id { print; found=1 }
+        END { if (!found) exit 1 }
+    '
+}
+
+extract_storage_from_row() {
+    local row="$1"
+    awk '{print $10}' <<< "$row" | tr -dc '0-9.'
+}
+
+destroy_bad_instance() {
+    local instance_id="$1"
+    warn "Zerstoere Instanz $instance_id wegen ungueltiger Storage-Groesse..."
+    vast_cmd destroy instance "$instance_id" >/dev/null 2>&1 || warn "Destroy fuer Instanz $instance_id konnte nicht bestaetigt werden."
+}
+
+postcheck_instance_storage() {
     local instance_id="$1"
     [[ "$POSTCHECK_INSTANCE" == "1" ]] || return 0
 
     echo ""
     log "Versuche Nachcheck der erzeugten Instanz-ID $instance_id ..."
-    if vast_cmd show instance "$instance_id" 2>/dev/null; then
-        ok "Post-Check erfolgreich: Instanzdaten wurden abgefragt."
+
+    local row=""
+    local storage_val=""
+
+    if ! row="$(get_instance_row "$instance_id")"; then
+        warn "Post-Check konnte keine Zeile fuer Instanz $instance_id finden."
         return 0
     fi
 
-    if vast_cmd show instances 2>/dev/null | grep -q "$instance_id"; then
-        ok "Post-Check erfolgreich: Instanz-ID erscheint in 'show instances'."
+    printf '%s\n' "$row"
+
+    storage_val="$(extract_storage_from_row "$row")"
+    if [[ -z "$storage_val" ]]; then
+        warn "Storage-Wert konnte aus dem Post-Check nicht extrahiert werden."
         return 0
     fi
 
-    warn "Post-Check konnte die Instanz nicht eindeutig bestaetigen. Bitte manuell via 'vastai show instances' pruefen."
-    return 0
+    log "Extrahierter Storage-Wert: ${storage_val} GB"
+
+    if python3 - "$storage_val" "$EXPECTED_TEMPLATE_DISK_GB" <<'PY'
+import sys
+a=float(sys.argv[1]); b=float(sys.argv[2])
+raise SystemExit(0 if a + 1e-9 < b else 1)
+PY
+    then
+        warn "Instanz hat zu wenig Storage: ${storage_val} GB < ${EXPECTED_TEMPLATE_DISK_GB} GB"
+
+        if [[ "$AUTO_DESTROY_BAD_STORAGE" == "1" ]]; then
+            destroy_bad_instance "$instance_id"
+        fi
+
+        die "Buchung verworfen: Tatsaechliche Storage-Groesse ist kleiner als erwartet."
+    fi
+
+    ok "Post-Check erfolgreich: Storage ${storage_val} GB >= ${EXPECTED_TEMPLATE_DISK_GB} GB"
 }
 
 main() {
@@ -310,6 +290,7 @@ main() {
 
     require_cmd python3
     require_cmd mktemp
+    require_cmd awk
     check_auth
     ensure_inputs
     validate_disk_value_if_set
@@ -472,7 +453,7 @@ PY
             mkdir -p "$(dirname "$STATE_FILE")"
             echo "$extracted_id" > "$STATE_FILE"
             ok "Instanz-ID $extracted_id wurde in $STATE_FILE gesichert."
-            show_instance_postcheck "$extracted_id"
+            postcheck_instance_storage "$extracted_id"
         else
             warn "Instanz wurde moeglicherweise gestartet, aber die ID-Extraktion schlug fehl."
             warn "Bitte den Zustand manuell via 'vastai show instances' pruefen."
