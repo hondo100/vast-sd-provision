@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-05.02
+# find-cheapest-instance.sh | Version: 2026-06-05.03
 # =============================================================================
 #
 # ZWECK
@@ -332,7 +332,13 @@ validate_offer_cuda() {
     local raw=""
     local cuda_max_good=""
 
-    raw="$(vast_cmd show offer "$offer_id" --raw 2>/dev/null)" || die "CUDA-Validierung fehlgeschlagen: Offer $offer_id konnte nicht geladen werden."
+   # NEU (mit Fehler-Capture)
+local err_msg
+err_msg=$(vast_cmd show offer "$offer_id" --raw 2>&1 > /tmp/vast_debug.json) || {
+    cat /tmp/vast_debug.json >&2
+    die "CUDA-Validierung fehlgeschlagen: API-Fehler für Offer $offer_id (siehe oben)."
+}
+raw=$(cat /tmp/vast_debug.json)
 
     cuda_max_good="$(
         printf '%s' "$raw" | python3 - <<'PY'
