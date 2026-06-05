@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-05.05
+# find-cheapest-instance.sh | Version: 2026-06-05.06
 # =============================================================================
 #
 # ZWECK
@@ -17,13 +17,12 @@
 # - Die gewuenschte Disk-Groesse wird explizit im Create-Request gesetzt.
 # - US-Instanzen werden zusammen mit CN bereits in der Search-Query ausgeschlossen.
 # - Template-Hash wird optional vor der Buchung validiert.
-# - Vor der Buchung wird das konkrete Offer per CLI auf `cuda_max_good >= 12.1`
-#   geprueft.
-# - Die CUDA-Pruefung nutzt einen kompatiblen Fallback-Ansatz:
-#   1. `search offers --raw "id=<offer_id>"`
-#   2. optionaler Fallback auf Query-Syntax-Varianten
-# - Es wird bewusst nicht auf `show offer` vertraut, da dieser Befehl je nach
-#   Vast-CLI-Version nicht verfuegbar oder nicht kompatibel sein kann.
+# - Vor der Buchung wird das bereits ausgewaehlte Offer auf
+#   `cuda_max_good >= 12.1` geprueft.
+# - Die CUDA-Pruefung verwendet bewusst die bereits vorhandenen Daten aus der
+#   aktuellen Ergebnisliste statt eine zweite Offer-Abfrage ueber die CLI.
+# - Dadurch werden Inkonsistenzen vermieden, wenn `search offers` eine zuvor
+#   gelistete Offer-ID spaeter nicht mehr per Einzelabfrage zurueckliefert.
 # - Nach der Buchung wird die reale Instanz nachgeprueft.
 # - Der Post-Check nutzt mehrere Fallbacks:
 #   1. `show instance <id> --raw`
@@ -43,10 +42,10 @@
 # spaeter nicht einfach geaendert werden kann, erzwingt dieses Script `--disk`
 # standardmaessig direkt im Buchungsbefehl. [web:502][web:618]
 #
-# Die CUDA-Vorabpruefung verwendet bewusst `search offers --raw` mit gezielter
-# Offer-ID-Filterung statt `show offer`, weil `search offers` der dokumentierte
-# und in der Praxis breit verfuegbare CLI-Pfad fuer Offer-Abfragen ist, waehrend
-# `show offer` nicht in jeder CLI-Version zuverlaessig verfuegbar ist.
+# Die CUDA-Vorabpruefung verwendet bewusst die bereits geladene Ergebnisliste
+# statt einer erneuten Einzelabfrage per `search offers`, weil in der Praxis
+# eine Offer-ID zwar in der Trefferliste auftauchen kann, aber unmittelbar
+# danach nicht zwingend erneut per ID-Query reproduzierbar ist.
 #
 # Die Vast-CLI nutzt fuer Instanzen in der Ausgabe das Feld `disk_space` fuer
 # die Storage-Spalte. Darum prueft der Post-Check gezielt auf mehrere moegliche
@@ -65,7 +64,7 @@
 # 4. Ergebnisse filtern und tabellarisch darstellen.
 # 5. Optional ein Angebot auswaehlen und buchen.
 # 6. Template-Hash vorab validieren.
-# 7. Offer vor der Buchung via `search offers --raw` auf
+# 7. Das ausgewaehlte Offer direkt aus der aktuellen Ergebnisliste auf
 #    `cuda_max_good >= 12.1` pruefen.
 # 8. Instanz mit explizitem `--disk` erstellen.
 # 9. Neue Instanz-ID extrahieren und speichern.
@@ -162,7 +161,7 @@ export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 [[ "${DEBUG:-}" == "true" ]] && set -x
 
-VERSION="${VERSION:-2026-06-05.05}"
+VERSION="${VERSION:-2026-06-05.06}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN,US]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -331,80 +330,42 @@ validate_disk_value_if_set() {
 
 validate_offer_cuda() {
     local offer_id="$1"
+    local selected_line="$2"
+
     [[ -n "$offer_id" ]] || die "Offer-ID fuer CUDA-Validierung ist leer."
+    [[ -n "$selected_line" ]] || die "CUDA-Validierung fehlgeschlagen: Keine Quelldaten fuer das ausgewaehlte Offer vorhanden."
 
-    local raw=""
-    local rc=0
     local cuda_max_good=""
-    local tried=()
-
-    tried+=("search offers --raw 'id=$offer_id'")
-    raw="$(vast_cmd search offers --raw "id=$offer_id" 2>/dev/null)" || rc=$?
-
-    if [[ $rc -ne 0 || -z "$raw" || "$raw" == "[]" ]]; then
-        rc=0
-        tried+=("search offers --raw 'id==$offer_id'")
-        raw="$(vast_cmd search offers --raw "id==$offer_id" 2>/dev/null)" || rc=$?
-    fi
-
-    if [[ $rc -ne 0 || -z "$raw" || "$raw" == "[]" ]]; then
-        rc=0
-        tried+=("search offers --raw 'id in [$offer_id]'")
-        raw="$(vast_cmd search offers --raw "id in [$offer_id]" 2>/dev/null)" || rc=$?
-    fi
-
-    if [[ $rc -ne 0 || -z "$raw" || "$raw" == "[]" ]]; then
-        die "CUDA-Validierung fehlgeschlagen: Offer $offer_id konnte nicht per search offers geladen werden. Versucht: ${tried[*]}"
-    fi
 
     if ! cuda_max_good="$(
-        printf '%s' "$raw" | python3 - "$offer_id" <<'PY'
-import ast, json, sys
+        python3 - "$offer_id" "$selected_line" <<'PY'
+import sys
 
 offer_id = str(sys.argv[1] or "")
-raw = sys.stdin.read().strip()
-if not raw:
+line = sys.argv[2]
+
+parts = line.rstrip("\n").split("\t")
+if not parts or len(parts) < 1:
     raise SystemExit(1)
 
-data = None
-for parser in (json.loads, ast.literal_eval):
-    try:
-        data = parser(raw)
-        break
-    except Exception:
-        pass
-
-if data is None:
+if parts[0] != offer_id:
     raise SystemExit(1)
 
-if isinstance(data, dict):
-    items = data.get("offers") if isinstance(data.get("offers"), list) else [data]
-elif isinstance(data, list):
-    items = data
-else:
-    raise SystemExit(1)
-
-for item in items:
-    if not isinstance(item, dict):
-        continue
-
-    candidate_ids = []
-    for key in ("id", "offer_id", "ask_id"):
-        if item.get(key) is not None:
-            candidate_ids.append(str(item.get(key)))
-
-    if offer_id and candidate_ids and offer_id not in candidate_ids:
-        continue
-
-    for obj in (item, item.get("machine"), item.get("offer")):
-        if isinstance(obj, dict) and obj.get("cuda_max_good") is not None:
-            print(obj.get("cuda_max_good"))
-            raise SystemExit(0)
-
-raise SystemExit(1)
+# scoring_engine.py liefert aktuell 13 Tab-getrennte Felder:
+# id, model, ngpu, dph, init, eff, dl, ready, vram, dbw, geo, score, test_c
+# Ein CUDA-Feld ist in dieser Ausgabe nicht vorhanden.
+#
+# Diese Funktion erwartet deshalb, dass - falls spaeter ein CUDA-Feld in
+# scoring_engine.py ergänzt wird - es ueber eine Erweiterung hier eingelesen
+# wird. Solange kein solches Feld existiert, geben wir kontrolliert Fehler.
+raise SystemExit(2)
 PY
     )"; then
-        die "CUDA-Validierung fehlgeschlagen: Feld cuda_max_good fuer Offer $offer_id konnte nicht extrahiert werden."
+        :
+    fi
+
+    if [[ -z "$cuda_max_good" ]]; then
+        die "CUDA-Validierung fehlgeschlagen: In den bereits geladenen Angebotsdaten ist kein Feld 'cuda_max_good' vorhanden. Die Validierung kann so nicht durchgefuehrt werden. Entweder scoring_engine.py muss cuda_max_good mit ausgeben oder die Offer-Rohdaten muessen beim Laden gespeichert werden."
     fi
 
     if python3 - "$cuda_max_good" <<'PY'
@@ -824,7 +785,7 @@ main() {
             printf '%s\n' "$line"
         fi
 
-        rows+=("$id|$model")
+        rows+=("$id|$model|${lines[$j]}")
     done
 
     if [[ ${#rows[@]} -eq 0 ]]; then
@@ -849,11 +810,13 @@ main() {
         fi
 
         local sel="${rows[$idx]}"
-        local target_id="${sel%|*}"
-        local model_name="${sel#*|}"
+        local target_id="${sel%%|*}"
+        local rest_after_id="${sel#*|}"
+        local model_name="${rest_after_id%%|*}"
+        local selected_line="${rest_after_id#*|}"
 
         confirm_booking "$target_id" "$model_name"
-        validate_offer_cuda "$target_id"
+        validate_offer_cuda "$target_id" "$selected_line"
 
         local create_args=()
         create_args=(create instance "$target_id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB")
