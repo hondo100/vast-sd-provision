@@ -327,73 +327,41 @@ validate_disk_value_if_set() {
 
 validate_offer_cuda() {
     local offer_id="$1"
-    [[ -n "$offer_id" ]] || die "Offer-ID fuer CUDA-Validierung ist leer."
+    [[ -n "$offer_id" ]] || die "Offer-ID für CUDA-Validierung ist leer."
 
-    local raw=""
-    local cuda_max_good=""
+    # 1. API-Abfrage: 'search offers' liefert sauberes JSON
+    local raw
+    raw=$(vast_cmd search offers --raw "id=$offer_id" 2>/dev/null)
 
-   # NEU (mit Fehler-Capture)
-local err_msg
-err_msg=$(vast_cmd show offer "$offer_id" --raw 2>&1 > /tmp/vast_debug.json) || {
-    cat /tmp/vast_debug.json >&2
-    die "CUDA-Validierung fehlgeschlagen: API-Fehler für Offer $offer_id (siehe oben)."
-}
-raw=$(cat /tmp/vast_debug.json)
-
-    cuda_max_good="$(
-        printf '%s' "$raw" | python3 - <<'PY'
-import ast, json, sys
-
-raw = sys.stdin.read().strip()
-if not raw:
-    raise SystemExit(1)
-
-data = None
-for parser in (json.loads, ast.literal_eval):
-    try:
-        data = parser(raw)
-        break
-    except Exception:
-        pass
-
-if data is None:
-    raise SystemExit(1)
-
-items = data if isinstance(data, list) else [data]
-
-for item in items:
-    if not isinstance(item, dict):
-        continue
-    val = item.get("cuda_max_good")
-    if val is None:
-        machine = item.get("machine")
-        if isinstance(machine, dict):
-            val = machine.get("cuda_max_good")
-    if val is None:
-        offer = item.get("offer")
-        if isinstance(offer, dict):
-            val = offer.get("cuda_max_good")
-    if val is None:
-        continue
-    print(val)
-    raise SystemExit(0)
-
-raise SystemExit(1)
-PY
-    )" || die "CUDA-Validierung fehlgeschlagen: Feld cuda_max_good fuer Offer $offer_id nicht gefunden."
-
-    if python3 - "$cuda_max_good" <<'PY'
-import sys
-v = float(sys.argv[1])
-raise SystemExit(0 if v >= 12.1 else 1)
-PY
-    then
-        ok "CUDA-Validierung erfolgreich: Offer $offer_id mit cuda_max_good=$cuda_max_good >= 12.1"
-    else
-        die "Offer $offer_id verworfen: cuda_max_good=$cuda_max_good < 12.1"
+    # 2. Validierung der Rückgabe
+    if [[ -z "$raw" || "$raw" == "[]" ]]; then
+        die "CUDA-Validierung fehlgeschlagen: Offer $offer_id nicht gefunden (evtl. bereits vergeben)."
     fi
 
-    return 0
+    # 3. Extraktion: Nutzt JSON-Parsing, da die Struktur bekannt ist
+    local cuda_max_good
+    cuda_max_good=$(echo "$raw" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    # search offers gibt immer eine Liste zurück
+    print(data[0]["cuda_max_good"])
+except:
+    sys.exit(1)
+')
+
+    # 4. Fehlerprüfung der Extraktion
+    if [[ $? -ne 0 ]]; then
+        die "CUDA-Validierung fehlgeschlagen: Feld 'cuda_max_good' für Offer $offer_id konnte nicht extrahiert werden."
+    fi
+
+    # 5. Kompatibilitätsprüfung (Schwellenwert 12.1)
+    if (( $(echo "$cuda_max_good >= 12.1" | bc -l) )); then
+        ok "CUDA-Validierung erfolgreich: Offer $offer_id (cuda=$cuda_max_good) ist kompatibel."
+        return 0
+    else
+        die "Offer $offer_id verworfen: cuda_max_good=$cuda_max_good < 12.1 (Inkompatibel mit Forge-Templates)."
+    fi
 }
 
 print_booking_summary() {
