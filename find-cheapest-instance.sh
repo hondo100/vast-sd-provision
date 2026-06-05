@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-05.06
+# find-cheapest-instance.sh | Version: 2026-06-05.07
 # =============================================================================
 #
 # ZWECK
@@ -21,6 +21,8 @@
 #   `cuda_max_good >= 12.1` geprueft.
 # - Die CUDA-Pruefung verwendet bewusst die bereits vorhandenen Daten aus der
 #   aktuellen Ergebnisliste statt eine zweite Offer-Abfrage ueber die CLI.
+# - Dazu muss `scoring_engine.py` das Feld `cuda_max_good` als zusaetzliche
+#   TSV-Spalte mit ausgeben.
 # - Dadurch werden Inkonsistenzen vermieden, wenn `search offers` eine zuvor
 #   gelistete Offer-ID spaeter nicht mehr per Einzelabfrage zurueckliefert.
 # - Nach der Buchung wird die reale Instanz nachgeprueft.
@@ -40,21 +42,26 @@
 # Request-Parameter sind der zuverlaessigste Weg, um Werte wie die Disk-Groesse
 # sicher festzulegen. Da die Disk-Groesse bei der Erstellung festgelegt wird und
 # spaeter nicht einfach geaendert werden kann, erzwingt dieses Script `--disk`
-# standardmaessig direkt im Buchungsbefehl. [web:502][web:618]
+# standardmaessig direkt im Buchungsbefehl.
 #
 # Die CUDA-Vorabpruefung verwendet bewusst die bereits geladene Ergebnisliste
 # statt einer erneuten Einzelabfrage per `search offers`, weil in der Praxis
 # eine Offer-ID zwar in der Trefferliste auftauchen kann, aber unmittelbar
 # danach nicht zwingend erneut per ID-Query reproduzierbar ist.
 #
-# Die Vast-CLI nutzt fuer Instanzen in der Ausgabe das Feld `disk_space` fuer
-# die Storage-Spalte. Darum prueft der Post-Check gezielt auf mehrere moegliche
-# Storage-Felder und nutzt notfalls einen Tabellen-Fallback. [web:614][web:579]
+# Das Feld `cuda_max_good` ist in den Offer-Rohdaten vorhanden und beschreibt
+# die maximal sinnvoll nutzbare CUDA-Version des Angebots. Diese Version prueft
+# gegen den gewuenschten Mindestwert 12.1.
+#
+# Die Vast-CLI nutzt fuer Instanzen in der Ausgabe je nach Endpunkt Felder wie
+# `disk_space`, `disk`, `storage` oder verwandte Schreibweisen. Darum prueft der
+# Post-Check gezielt auf mehrere moegliche Storage-Felder und nutzt notfalls
+# einen Tabellen-Fallback.
 #
 # Bash gibt fuer Funktionen standardmaessig den Exit-Status des letzten
 # Kommandos zurueck. Unter `set -Eeuo pipefail` kann das bei rein optionalen
 # Tests unerwuenschte Abbrueche ausloesen. Deshalb enden Hilfsfunktionen hier
-# explizit mit `return 0`. [web:663][web:640]
+# explizit mit `return 0`.
 #
 # FUNKTIONSUEBERSICHT
 # ------------------
@@ -70,6 +77,18 @@
 # 9. Neue Instanz-ID extrahieren und speichern.
 # 10. Storage der realen Instanz per Post-Check verifizieren.
 # 11. Bei zu kleiner Storage optional automatisch zerstoeren.
+#
+# VORAUSSETZUNG
+# -------------
+# Dieses Script erwartet, dass `scoring_engine.py` pro Zeile 14 TSV-Felder
+# ausgibt, und zwar in genau dieser Reihenfolge:
+#
+#   id, model, ngpu, dph, init, eff, dl, ready, vram, dbw, geo,
+#   score, test_c, cuda_max_good
+#
+# Falls `scoring_engine.py` noch kein `cuda_max_good` ausgibt, muss zuerst diese
+# Datei angepasst werden. Andernfalls wird die CUDA-Validierung hier gezielt
+# mit einer klaren Fehlermeldung abbrechen.
 #
 # BENOETIGTE DATEIEN
 # ------------------
@@ -161,7 +180,7 @@ export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 [[ "${DEBUG:-}" == "true" ]] && set -x
 
-VERSION="${VERSION:-2026-06-05.06}"
+VERSION="${VERSION:-2026-06-05.07}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN,US]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -335,38 +354,14 @@ validate_offer_cuda() {
     [[ -n "$offer_id" ]] || die "Offer-ID fuer CUDA-Validierung ist leer."
     [[ -n "$selected_line" ]] || die "CUDA-Validierung fehlgeschlagen: Keine Quelldaten fuer das ausgewaehlte Offer vorhanden."
 
+    local parsed_offer_id=""
     local cuda_max_good=""
 
-    if ! cuda_max_good="$(
-        python3 - "$offer_id" "$selected_line" <<'PY'
-import sys
+    IFS=$'\t' read -r parsed_offer_id _ _ _ _ _ _ _ _ _ _ _ _ cuda_max_good <<< "$selected_line"
 
-offer_id = str(sys.argv[1] or "")
-line = sys.argv[2]
-
-parts = line.rstrip("\n").split("\t")
-if not parts or len(parts) < 1:
-    raise SystemExit(1)
-
-if parts[0] != offer_id:
-    raise SystemExit(1)
-
-# scoring_engine.py liefert aktuell 13 Tab-getrennte Felder:
-# id, model, ngpu, dph, init, eff, dl, ready, vram, dbw, geo, score, test_c
-# Ein CUDA-Feld ist in dieser Ausgabe nicht vorhanden.
-#
-# Diese Funktion erwartet deshalb, dass - falls spaeter ein CUDA-Feld in
-# scoring_engine.py ergänzt wird - es ueber eine Erweiterung hier eingelesen
-# wird. Solange kein solches Feld existiert, geben wir kontrolliert Fehler.
-raise SystemExit(2)
-PY
-    )"; then
-        :
-    fi
-
-    if [[ -z "$cuda_max_good" ]]; then
-        die "CUDA-Validierung fehlgeschlagen: In den bereits geladenen Angebotsdaten ist kein Feld 'cuda_max_good' vorhanden. Die Validierung kann so nicht durchgefuehrt werden. Entweder scoring_engine.py muss cuda_max_good mit ausgeben oder die Offer-Rohdaten muessen beim Laden gespeichert werden."
-    fi
+    [[ -n "$parsed_offer_id" ]] || die "CUDA-Validierung fehlgeschlagen: Offer-ID konnte aus den Quelldaten nicht gelesen werden."
+    [[ "$parsed_offer_id" == "$offer_id" ]] || die "CUDA-Validierung fehlgeschlagen: Offer-ID-Mismatch ($parsed_offer_id != $offer_id)."
+    [[ -n "$cuda_max_good" ]] || die "CUDA-Validierung fehlgeschlagen: Feld cuda_max_good fehlt in den Quelldaten. Pruefe, ob scoring_engine.py 14 TSV-Felder inklusive cuda_max_good ausgibt."
 
     if python3 - "$cuda_max_good" <<'PY'
 import sys
@@ -729,7 +724,7 @@ main() {
     local filtered_lines=()
     for raw_line in "${lines[@]}"; do
         [[ -z "$raw_line" ]] && continue
-        IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ geo_field _ <<< "$raw_line"
+        IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ geo_field _ _ <<< "$raw_line"
 
         if [[ "$geo_field" =~ ^[[:space:]]*,[[:space:]]*$ ]]; then
             log "Filtere Angebot mit Geo=',' heraus (China-Heuristik/ungueltige Geo-Angabe)."
@@ -757,7 +752,7 @@ main() {
         [[ -z "${lines[$j]}" ]] && continue
 
         local test_c=""
-        IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ _ test_c <<< "${lines[$j]}"
+        IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ _ test_c _ <<< "${lines[$j]}"
 
         if compare_lt "$test_c" "$min_test"; then
             min_test="$test_c"
@@ -769,8 +764,8 @@ main() {
         [[ $j -ge $RESULTS ]] && break
         [[ -z "${lines[$j]}" ]] && continue
 
-        local id="" model="" ngpu="" dph="" init="" eff="" dl="" ready="" vram="" dbw="" geo="" score="" test_c=""
-        IFS=$'\t' read -r id model ngpu dph init eff dl ready vram dbw geo score test_c <<< "${lines[$j]}"
+        local id="" model="" ngpu="" dph="" init="" eff="" dl="" ready="" vram="" dbw="" geo="" score="" test_c="" cuda_max_good=""
+        IFS=$'\t' read -r id model ngpu dph init eff dl ready vram dbw geo score test_c cuda_max_good <<< "${lines[$j]}"
 
         line="$(printf "%-5d %-12s %-16s %-5s %-7.2f %-7.2f %-8.2f %-7.0f %-6.0f %-5.0f %-6.0f %-4s %-6.2f" \
             "$((j+1))" "$id" "$model" "$ngpu" "$dph" "$init" "$eff" "$dl" "$ready" "$vram" "$dbw" "$geo" "$score")"
