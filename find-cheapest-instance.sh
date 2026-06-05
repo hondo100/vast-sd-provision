@@ -379,12 +379,12 @@ PY
     if python3 - "$cuda_max_good" <<'PY'
 import sys
 v = float(sys.argv[1])
-raise SystemExit(0 if v >= 13.0 else 1)
+raise SystemExit(0 if v >= 12.1 else 1)
 PY
     then
-        ok "CUDA-Validierung erfolgreich: Offer $offer_id mit cuda_max_good=$cuda_max_good >= 13.0"
+        ok "CUDA-Validierung erfolgreich: Offer $offer_id mit cuda_max_good=$cuda_max_good >= 12.1"
     else
-        die "Offer $offer_id verworfen: cuda_max_good=$cuda_max_good < 13.0"
+        die "Offer $offer_id verworfen: cuda_max_good=$cuda_max_good < 12.1"
     fi
 
     return 0
