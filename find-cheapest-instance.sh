@@ -17,11 +17,15 @@
 # - Die gewuenschte Disk-Groesse wird explizit im Create-Request gesetzt.
 # - US-Instanzen werden zusammen mit CN bereits in der Search-Query ausgeschlossen.
 # - Template-Hash wird optional vor der Buchung validiert.
+# - Vor der Buchung wird das konkrete Offer gezielt via `show offer --raw`
+#   geprueft, um `cuda_max_good >= 13.0` sicherzustellen.
 # - Nach der Buchung wird die reale Instanz nachgeprueft.
 # - Der Post-Check nutzt mehrere Fallbacks:
 #   1. `show instance <id> --raw`
 #   2. `show instances --raw`
 #   3. Tabellen-Fallback aus `show instances`
+# - Der Post-Check enthaelt eine Retry-Logik mit Sleep, um
+#   Initialisierungsverzögerungen neuer Instanzen abzufangen.
 # - Bei Parse-Problemen werden Debug-Dateien geschrieben.
 # - Hilfsfunktionen enden explizit mit `return 0`, damit `set -e`/`trap ERR`
 #   nicht durch harmlose Tests ausgelöst werden.
@@ -33,6 +37,12 @@
 # sicher festzulegen. Da die Disk-Groesse bei der Erstellung festgelegt wird und
 # spaeter nicht einfach geaendert werden kann, erzwingt dieses Script `--disk`
 # standardmaessig direkt im Buchungsbefehl. [web:502][web:618]
+#
+# Fuer die Validierung eines bereits ausgewaehlten Einzelangebots ist ein
+# gezielter Abruf via `show offer <id> --raw` robuster als eine erneute
+# Suchabfrage ueber `search offers`, weil `search offers` primaer fuer
+# Filter-/Suchparameter gedacht ist. Daher liest dieses Script das Feld
+# `cuda_max_good` fuer die Vorab-Pruefung direkt aus `show offer --raw`.
 #
 # Die Vast-CLI nutzt fuer Instanzen in der Ausgabe das Feld `disk_space` fuer
 # die Storage-Spalte. Darum prueft der Post-Check gezielt auf mehrere moegliche
@@ -51,10 +61,12 @@
 # 4. Ergebnisse filtern und tabellarisch darstellen.
 # 5. Optional ein Angebot auswaehlen und buchen.
 # 6. Template-Hash vorab validieren.
-# 7. Instanz mit explizitem `--disk` erstellen.
-# 8. Neue Instanz-ID extrahieren und speichern.
-# 9. Storage der realen Instanz per Post-Check verifizieren.
-# 10. Bei zu kleiner Storage optional automatisch zerstoeren.
+# 7. Offer vor der Buchung via `show offer --raw` auf `cuda_max_good >= 13.0`
+#    pruefen.
+# 8. Instanz mit explizitem `--disk` erstellen.
+# 9. Neue Instanz-ID extrahieren und speichern.
+# 10. Storage der realen Instanz per Post-Check verifizieren.
+# 11. Bei zu kleiner Storage optional automatisch zerstoeren.
 #
 # BENOETIGTE DATEIEN
 # ------------------
@@ -313,6 +325,71 @@ validate_disk_value_if_set() {
     return 0
 }
 
+validate_offer_cuda() {
+    local offer_id="$1"
+    [[ -n "$offer_id" ]] || die "Offer-ID fuer CUDA-Validierung ist leer."
+
+    local raw=""
+    local cuda_max_good=""
+
+    raw="$(vast_cmd show offer "$offer_id" --raw 2>/dev/null)" || die "CUDA-Validierung fehlgeschlagen: Offer $offer_id konnte nicht geladen werden."
+
+    cuda_max_good="$(
+        printf '%s' "$raw" | python3 - <<'PY'
+import ast, json, sys
+
+raw = sys.stdin.read().strip()
+if not raw:
+    raise SystemExit(1)
+
+data = None
+for parser in (json.loads, ast.literal_eval):
+    try:
+        data = parser(raw)
+        break
+    except Exception:
+        pass
+
+if data is None:
+    raise SystemExit(1)
+
+items = data if isinstance(data, list) else [data]
+
+for item in items:
+    if not isinstance(item, dict):
+        continue
+    val = item.get("cuda_max_good")
+    if val is None:
+        machine = item.get("machine")
+        if isinstance(machine, dict):
+            val = machine.get("cuda_max_good")
+    if val is None:
+        offer = item.get("offer")
+        if isinstance(offer, dict):
+            val = offer.get("cuda_max_good")
+    if val is None:
+        continue
+    print(val)
+    raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+    )" || die "CUDA-Validierung fehlgeschlagen: Feld cuda_max_good fuer Offer $offer_id nicht gefunden."
+
+    if python3 - "$cuda_max_good" <<'PY'
+import sys
+v = float(sys.argv[1])
+raise SystemExit(0 if v >= 13.0 else 1)
+PY
+    then
+        ok "CUDA-Validierung erfolgreich: Offer $offer_id mit cuda_max_good=$cuda_max_good >= 13.0"
+    else
+        die "Offer $offer_id verworfen: cuda_max_good=$cuda_max_good < 13.0"
+    fi
+
+    return 0
+}
+
 print_booking_summary() {
     local target_id="$1"
     local model_name="$2"
@@ -518,32 +595,54 @@ postcheck_instance_storage() {
     local row=""
     local storage_val=""
     local source_used=""
+    local attempt=1
+    local max_attempts=6
+    local sleep_seconds=5
 
-    if single_raw="$(get_single_instance_raw_json "$instance_id")"; then
-        if storage_val="$(extract_storage_from_json "$single_raw" "$instance_id" 2>/dev/null)"; then
-            source_used="show instance --raw"
-            log "Storage aus gezieltem Instance-JSON extrahiert: ${storage_val} GB"
-        fi
-    fi
+    while (( attempt <= max_attempts )); do
+        single_raw=""
+        list_raw=""
+        row=""
+        storage_val=""
+        source_used=""
 
-    if [[ -z "$storage_val" ]]; then
-        if list_raw="$(get_instances_raw_json)"; then
-            if storage_val="$(extract_storage_from_json "$list_raw" "$instance_id" 2>/dev/null)"; then
-                source_used="show instances --raw"
-                log "Storage aus Instanzlisten-JSON extrahiert: ${storage_val} GB"
+        if single_raw="$(get_single_instance_raw_json "$instance_id")"; then
+            if storage_val="$(extract_storage_from_json "$single_raw" "$instance_id" 2>/dev/null)"; then
+                source_used="show instance --raw"
+                log "Storage aus gezieltem Instance-JSON extrahiert: ${storage_val} GB"
             fi
         fi
-    fi
 
-    if [[ -z "$storage_val" ]]; then
-        if row="$(get_instance_row "$instance_id")"; then
-            printf '%s\n' "$row"
-            storage_val="$(extract_storage_from_row "$row" || true)"
-            if [[ -n "$storage_val" ]]; then
-                source_used="show instances table"
+        if [[ -z "$storage_val" ]]; then
+            if list_raw="$(get_instances_raw_json)"; then
+                if storage_val="$(extract_storage_from_json "$list_raw" "$instance_id" 2>/dev/null)"; then
+                    source_used="show instances --raw"
+                    log "Storage aus Instanzlisten-JSON extrahiert: ${storage_val} GB"
+                fi
             fi
         fi
-    fi
+
+        if [[ -z "$storage_val" ]]; then
+            if row="$(get_instance_row "$instance_id")"; then
+                printf '%s\n' "$row"
+                storage_val="$(extract_storage_from_row "$row" || true)"
+                if [[ -n "$storage_val" ]]; then
+                    source_used="show instances table"
+                fi
+            fi
+        fi
+
+        if [[ -n "$storage_val" ]]; then
+            break
+        fi
+
+        if (( attempt < max_attempts )); then
+            warn "Post-Check-Versuch $attempt/$max_attempts lieferte noch keine Storage-Daten. Warte ${sleep_seconds}s auf Instanz-Initialisierung..."
+            sleep "$sleep_seconds"
+        fi
+
+        ((attempt++))
+    done
 
     if [[ -z "$storage_val" ]]; then
         save_postcheck_debug "$instance_id" "$single_raw" "$list_raw" "$row"
@@ -723,6 +822,7 @@ main() {
         local model_name="${sel#*|}"
 
         confirm_booking "$target_id" "$model_name"
+        validate_offer_cuda "$target_id"
 
         local create_args=()
         create_args=(create instance "$target_id" --template_hash "$TEMPLATE_HASH" --disk "$DISK_GB")
