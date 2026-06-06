@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# find-cheapest-instance.sh | Version: 2026-06-05.07
+# find-cheapest-instance.sh | Version: 2026-06-06.08
 # =============================================================================
 #
 # ZWECK
@@ -31,10 +31,13 @@
 #   2. `show instances --raw`
 #   3. Tabellen-Fallback aus `show instances`
 # - Der Post-Check enthaelt eine Retry-Logik mit Sleep, um
-#   Initialisierungsverzögerungen neuer Instanzen abzufangen.
+#   Initialisierungsverzoegerungen neuer Instanzen abzufangen.
+# - Der fruehere Post-Check-Bug ist behoben: `extract_storage_from_json()`
+#   liest das Raw-JSON jetzt ueber eine Environment-Variable an Python weiter,
+#   statt gleichzeitig Heredoc und Here-String auf stdin zu legen.
 # - Bei Parse-Problemen werden Debug-Dateien geschrieben.
 # - Hilfsfunktionen enden explizit mit `return 0`, damit `set -e`/`trap ERR`
-#   nicht durch harmlose Tests ausgelöst werden.
+#   nicht durch harmlose Tests ausgeloest werden.
 #
 # HINTERGRUND
 # -----------
@@ -180,7 +183,7 @@ export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin"
 set -Eeuo pipefail
 [[ "${DEBUG:-}" == "true" ]] && set -x
 
-VERSION="${VERSION:-2026-06-05.07}"
+VERSION="${VERSION:-2026-06-06.08}"
 RESULTS="${RESULTS:-10}"
 QUERY="${QUERY:-external=false rentable=true verified=true gpu_ram>=24 disk_space>=40 geolocation notin [CN,US]}"
 GPU_FILTER="${GPU_FILTER:-RTX (3090|4090|A5000|A6000|5000|6000)}"
@@ -453,20 +456,16 @@ extract_storage_from_json() {
     local raw_json="$1"
     local instance_id="${2:-}"
 
-    python3 - "$instance_id" <<'PY' <<< "$raw_json"
-import ast, json, sys
+    RAW_JSON="$raw_json" python3 - "$instance_id" <<'PY'
+import ast, json, os, sys
 
 instance_id = str(sys.argv[1] or "")
-raw = sys.stdin.read().strip()
+raw = os.environ.get("RAW_JSON", "").strip()
 if not raw:
     raise SystemExit(1)
 
 data = None
-
-for parser in (
-    lambda s: json.loads(s),
-    lambda s: ast.literal_eval(s),
-):
+for parser in (json.loads, ast.literal_eval):
     try:
         data = parser(raw)
         break
@@ -497,7 +496,7 @@ def item_id(item):
 
 def nested_dicts(item):
     out = [item]
-    for key in ("machine", "instance", "offer", "ask_contract", "contract"):
+    for key in ("machine", "instance", "offer", "ask_contract", "contract", "search"):
         v = item.get(key)
         if isinstance(v, dict):
             out.append(v)
@@ -583,7 +582,7 @@ postcheck_instance_storage() {
     local storage_val=""
     local source_used=""
     local attempt=1
-    local max_attempts=6
+    local max_attempts=12
     local sleep_seconds=5
 
     while (( attempt <= max_attempts )); do
@@ -594,7 +593,7 @@ postcheck_instance_storage() {
         source_used=""
 
         if single_raw="$(get_single_instance_raw_json "$instance_id")"; then
-            if storage_val="$(extract_storage_from_json "$single_raw" "$instance_id" 2>/dev/null)"; then
+            if storage_val="$(extract_storage_from_json "$single_raw" "$instance_id")"; then
                 source_used="show instance --raw"
                 log "Storage aus gezieltem Instance-JSON extrahiert: ${storage_val} GB"
             fi
@@ -602,7 +601,7 @@ postcheck_instance_storage() {
 
         if [[ -z "$storage_val" ]]; then
             if list_raw="$(get_instances_raw_json)"; then
-                if storage_val="$(extract_storage_from_json "$list_raw" "$instance_id" 2>/dev/null)"; then
+                if storage_val="$(extract_storage_from_json "$list_raw" "$instance_id")"; then
                     source_used="show instances --raw"
                     log "Storage aus Instanzlisten-JSON extrahiert: ${storage_val} GB"
                 fi
